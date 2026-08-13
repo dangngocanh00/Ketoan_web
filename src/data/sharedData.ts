@@ -8,7 +8,7 @@ import type {
   SessionV2, SessionStatusV2, ReconciledPair, ExceptionRecord,
   BankUnreconciledRecord, FbUnreconciledRecord, AuditEntry,
   DashboardSession, CsAttentionItem, MissingBillCase, MissingBillRecord,
-  ExplanationCase, FbSurplusBill, EvidenceImage,
+  MissingBillLastActionKind, ExplanationCase, FbSurplusBill, EvidenceImage,
 } from './mock'
 
 // ── Seeded xorshift32 RNG ────────────────────────────────────────────────────
@@ -72,20 +72,23 @@ export const userById = Object.fromEntries(sharedUsers.map(u => [u.user_id, u]))
 export const teamById = Object.fromEntries(sharedTeams.map(t => [t.team_id, t]))
 export const csUsersList = sharedUsers.filter(u => u.role === 'CS')
 
-// TKQC per user (truncated display ID)
+// TKQC per user (truncated display ID). Leaders (USR-001/007/012) get their
+// own TKQC too — a Leader is also a CS for their own ownership (see the
+// "Leader business-data participation" block below), never a separate
+// leader-only dataset.
 const USER_TKQC: Record<string, string> = {
-  'USR-002': '238472918...', 'USR-003': '562841290...', 'USR-004': '917238142...',
-  'USR-005': '349182047...', 'USR-006': '781920304...', 'USR-008': '449182803...',
-  'USR-009': '618204791...', 'USR-010': '829104812...', 'USR-011': '192837465...',
+  'USR-001': '384756219...', 'USR-002': '238472918...', 'USR-003': '562841290...', 'USR-004': '917238142...',
+  'USR-005': '349182047...', 'USR-006': '781920304...', 'USR-007': '827364510...', 'USR-008': '449182803...',
+  'USR-009': '618204791...', 'USR-010': '829104812...', 'USR-011': '192837465...', 'USR-012': '739461820...',
   'USR-013': '449182047...', 'USR-014': '917384920...', 'USR-015': '281904723...',
   'USR-016': '562718302...',
 }
 
 // Cards per user (last4)
 const USER_CARDS: Record<string, string[]> = {
-  'USR-002': ['8821','4312'], 'USR-003': ['7744','9201'], 'USR-004': ['4482','6615'],
-  'USR-005': ['2219','8834'], 'USR-006': ['5501','3389'], 'USR-008': ['7762','4421'],
-  'USR-009': ['6634','8819'], 'USR-010': ['3312','7703'], 'USR-011': ['9918','4400'],
+  'USR-001': ['6602','1145'], 'USR-002': ['8821','4312'], 'USR-003': ['7744','9201'], 'USR-004': ['4482','6615'],
+  'USR-005': ['2219','8834'], 'USR-006': ['5501','3389'], 'USR-007': ['4470','8823'], 'USR-008': ['7762','4421'],
+  'USR-009': ['6634','8819'], 'USR-010': ['3312','7703'], 'USR-011': ['9918','4400'], 'USR-012': ['5588','2210'],
   'USR-013': ['5519','2201'], 'USR-014': ['3344','7722'], 'USR-015': ['6691','9900'],
   'USR-016': ['4433','8811'],
 }
@@ -395,6 +398,41 @@ const _generated = (() => {
     }
   }
 
+  // ── Leader business-data participation ────────────────────────────────────
+  // Leaders are also a CS for their own TKQC/Card (see USER_TKQC/USER_CARDS
+  // above) — this feeds a Leader into the EXACT same makeTxn /
+  // deriveMissingCases / sessionsV2 pipeline every CS already goes through,
+  // instead of a parallel "leader mock data" object. Deliberately the LAST
+  // thing to consume the shared `rng` in this generator, so it cannot shift
+  // any CS/exception/surplus/explanation/audit value computed above.
+  //
+  // Dũng (USR-001, Team Alpha — the `leader01` demo account) gets a small,
+  // real workload across 3 currently-open sessions so his Personal Dashboard
+  // exercises all three non-"chờ duyệt" states from real shared data:
+  //  - 13/08 (active, untouched)        -> "Chưa xử lý"
+  //  - 12/08 (active, CS uploaded)       -> "Đang xử lý"
+  //  - 11/08 (closing_soon, <6h to due)  -> "Sắp hết hạn"
+  for (let i = 0; i < 4; i++) txns.push(makeTxn('2026-08-13', 'USR-001', 'unreconciled', rng.amt(20, 140)))
+  for (let i = 0; i < 3; i++) txns.push(makeTxn('2026-08-12', 'USR-001', 'unreconciled', rng.amt(20, 140)))
+  for (let i = 0; i < 3; i++) txns.push(makeTxn('2026-08-11', 'USR-001', 'unreconciled', rng.amt(20, 140)))
+
+  auditEvents.push(
+    {
+      id: `AUDIT-${rng.pad(++auditSeq, 6)}`,
+      timestamp: '14/08 07:15',
+      category: 'reconciliation', action: 'Phát hiện Bill thiếu',
+      actor: 'Hệ thống', target: 'Dũng',
+      detail: 'Dũng · phiên 13/08 · 4 Bill chưa đối soát',
+    },
+    {
+      id: `AUDIT-${rng.pad(++auditSeq, 6)}`,
+      timestamp: '13/08 20:32',
+      category: 'cs_action', action: 'CS upload Bill bổ sung',
+      actor: 'Dũng', target: 'Phiên 12/08',
+      detail: 'Dũng đã upload Bill bổ sung cho phiên 12/08',
+    },
+  )
+
   // Sort audit log by timestamp desc
   auditEvents.sort((a, b) => b.timestamp.localeCompare(a.timestamp))
 
@@ -535,37 +573,81 @@ function deriveMissingCases(): MissingBillCase[] {
     const isNam0808  = uid === 'USR-004' && date === '2026-08-08'
     const isTrang0808 = uid === 'USR-005' && date === '2026-08-08'
     const isMinh0806 = uid === 'USR-016' && date === '2026-08-06'
+    // Leader (Dũng) participation scenarios — see "Leader business-data
+    // participation" above for why these 3 sessions/dates were chosen.
+    const isDung0813 = uid === 'USR-001' && date === '2026-08-13'
+    const isDung0812 = uid === 'USR-001' && date === '2026-08-12'
+    const isDung0811 = uid === 'USR-001' && date === '2026-08-11'
 
     let suppBills = 0, suppAmt = 0, caseStatus: 'chua_xu_ly' | 'dang_xu_ly' | 'cho_duyet' | 'qua_han'
     let lastActionDesc = 'Chưa có'
+    // Structured action-type, set alongside lastActionDesc from the SAME
+    // branch decision — csWorkload.ts derives "Đang xử lý" from this field,
+    // never by parsing lastActionDesc text (system/admin events stay 'none').
+    let lastActionKind: MissingBillLastActionKind = 'none'
     const hasExplanation = isNam0808 || isTrang0808
 
     if (isManh0808) {
-      suppBills = 20; suppAmt = Math.round(grp.slice(0, 20).reduce((s, t) => s + t.amt, 0) * 100) / 100
-      // Actually Mạnh's matched 20 are separate txns; remaining 15 are the unreconciled
-      // suppBills counts the matched ones generated separately — use count from sessionsV2
-      suppBills = 20; suppAmt = sessionsV2.find(s => s.id === 'sv2') ? 720 : suppBills
-      caseStatus = 'dang_xu_ly'; lastActionDesc = 'Upload Bill bổ sung · 2 giờ trước'
+      // Mạnh's 20 already-matched txns for this session are SEPARATE
+      // transactions (kind: 'matched', generated earlier — they feed
+      // reconciledBills/reconciledAmount, not this case) — they must never be
+      // subtracted from `initialBills` (15), which only counts his originally
+      // MISSING (unreconciled) bank bills. Bug fix: remainingBills must come
+      // from Bank Bills actually matched via reconciliation, bounded by
+      // initialBills, never from an unrelated/uploaded-bill count.
+      suppBills = Math.min(8, initialBills)
+      suppAmt = Math.round(grp.slice(0, suppBills).reduce((s, t) => s + t.amt, 0) * 100) / 100
+      caseStatus = 'dang_xu_ly'; lastActionDesc = 'Upload Bill bổ sung · 2 giờ trước'; lastActionKind = 'cs_upload'
     } else if (isNam0808) {
-      suppBills = 0; suppAmt = 0; caseStatus = 'cho_duyet'; lastActionDesc = 'Gửi giải trình · 3 giờ trước'
+      suppBills = 0; suppAmt = 0; caseStatus = 'cho_duyet'; lastActionDesc = 'Gửi giải trình · 3 giờ trước'; lastActionKind = 'cs_explanation_submitted'
     } else if (isTrang0808) {
-      suppBills = 0; suppAmt = 0; caseStatus = 'dang_xu_ly'; lastActionDesc = 'Giải trình bị từ chối · 1 giờ trước'
+      suppBills = 0; suppAmt = 0; caseStatus = 'dang_xu_ly'; lastActionDesc = 'Giải trình bị từ chối · 1 giờ trước'; lastActionKind = 'cs_explanation_rejected'
     } else if (isMinh0806) {
-      suppBills = 0; suppAmt = 0; caseStatus = 'qua_han'; lastActionDesc = 'Chưa có'
+      suppBills = 0; suppAmt = 0; caseStatus = 'qua_han'; lastActionDesc = 'Chưa có'; lastActionKind = 'none'
+    } else if (isDung0813) {
+      // Untouched — exercises "Chưa xử lý" from real shared data.
+      suppBills = 0; suppAmt = 0; caseStatus = 'chua_xu_ly'; lastActionDesc = 'Chưa có'; lastActionKind = 'none'
+    } else if (isDung0812) {
+      // CS (Dũng himself) uploaded a supplement — exercises "Đang xử lý".
+      suppBills = Math.min(2, initialBills)
+      suppAmt = Math.round(grp.slice(0, suppBills).reduce((s, t) => s + t.amt, 0) * 100) / 100
+      caseStatus = 'dang_xu_ly'; lastActionDesc = 'Upload Bill bổ sung · 3 giờ trước'; lastActionKind = 'cs_upload'
+    } else if (isDung0811) {
+      // No action yet; session <6h to deadline flips the DISPLAY status to
+      // "Sắp hết hạn" in csWorkload.ts regardless of this workflow status.
+      suppBills = 0; suppAmt = 0; caseStatus = 'chua_xu_ly'; lastActionDesc = 'Chưa có'; lastActionKind = 'none'
     } else if (sessStatus === 'closed' || sessStatus === 'closed_pending') {
       caseStatus = rng3.next() < 0.3 ? 'qua_han' : 'dang_xu_ly'
       lastActionDesc = caseStatus === 'qua_han' ? 'Chưa có' : `Upload Bill bổ sung · ${rng3.int(1,8)} giờ trước`
+      lastActionKind = caseStatus === 'dang_xu_ly' ? 'cs_upload' : 'none'
       suppBills = rng3.int(0, Math.floor(initialBills * 0.6))
       suppAmt = Math.round(grp.slice(0, suppBills).reduce((s, t) => s + t.amt, 0) * 100) / 100
     } else {
       caseStatus = rng3.next() < 0.4 ? 'chua_xu_ly' : 'dang_xu_ly'
       lastActionDesc = caseStatus === 'chua_xu_ly' ? 'Chưa có' : `Upload Bill bổ sung · ${rng3.int(1,6)} giờ trước`
+      lastActionKind = caseStatus === 'dang_xu_ly' ? 'cs_upload' : 'none'
       suppBills = rng3.int(0, Math.floor(initialBills * 0.5))
       suppAmt = Math.round(grp.slice(0, suppBills).reduce((s, t) => s + t.amt, 0) * 100) / 100
     }
 
-    const remainingBills = initialBills - suppBills
-    const remainingAmount = Math.round((initialAmount - suppAmt) * 100) / 100
+    // Invariant (fixed at the shared-data source, not patched per-UI): a Bank
+    // Bill is only ever "resolved" by successfully matching via
+    // reconciliation, counted by suppBills/suppAmt above — never by the count
+    // of Facebook Bills uploaded (an upload that doesn't match stays missing
+    // and may instead show up in fbSurplusBills). remainingBills/Amount can
+    // therefore never go negative; clamp defensively in case any branch above
+    // ever picks a supplement larger than what was originally missing.
+    //
+    // LIMITATION: the current dataset has no live reconciliation pass, so
+    // there is no real per-bill "uploaded vs successfully matched" flag —
+    // suppBills/suppAmt are themselves the closest proxy for "matched" this
+    // generator can express. A true uploaded-vs-matched distinction (and
+    // moving genuinely-unmatched uploads into fbSurplusBills automatically)
+    // belongs to Module 2's real reconciliation engine, not this generator.
+    const suppBillsSafe = Math.max(0, Math.min(suppBills, initialBills))
+    const suppAmtSafe = Math.max(0, Math.min(suppAmt, initialAmount))
+    const remainingBills = initialBills - suppBillsSafe
+    const remainingAmount = Math.round((initialAmount - suppAmtSafe) * 100) / 100
     const pendingBills = hasExplanation ? remainingBills : 0
     const pendingAmount = hasExplanation ? remainingAmount : 0
 
@@ -578,12 +660,13 @@ function deriveMissingCases(): MissingBillCase[] {
     return {
       id: `mb-${uid}-${date.replace(/-/g,'')}`,
       cs: u.full_name, team: t.team_name,
+      ownerCsId: uid,
       sessionId: sid, sessionDate: date,
       initialBills, initialAmount,
-      supplementedBills: suppBills, supplementedAmount: suppAmt,
+      supplementedBills: suppBillsSafe, supplementedAmount: suppAmtSafe,
       remainingBills, remainingAmount,
       pendingExplanationBills: pendingBills, pendingExplanationAmount: pendingAmount,
-      status: caseStatus, lastActionDesc,
+      status: caseStatus, lastActionDesc, lastActionKind,
       processingDeadline: deadline, hoursRemaining: hoursRem,
       t0, notifiedAt,
       reminderSentAt: rng3.next() < 0.6 ? `${fmtDisp(date)} 10:25` : undefined,

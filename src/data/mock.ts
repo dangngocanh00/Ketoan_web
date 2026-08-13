@@ -589,6 +589,15 @@ export const sessionDetails: Record<string, SessionDetail> = {
 
 export type MBCaseStatus = 'chua_xu_ly' | 'dang_xu_ly' | 'cho_duyet' | 'qua_han'
 
+// Structured "who/what" behind lastActionDesc, set at generation time from
+// the same branch that decides the display text — never re-derived later by
+// parsing that text. 'none' = no genuine CS action yet (system detection only).
+export type MissingBillLastActionKind =
+  | 'none'
+  | 'cs_upload'
+  | 'cs_explanation_submitted'
+  | 'cs_explanation_rejected'
+
 export interface MissingBillCase {
   id: string
   cs: string
@@ -610,6 +619,10 @@ export interface MissingBillCase {
   t0: string
   notifiedAt: string
   reminderSentAt?: string
+  // Optional — populated by sharedData.ts's generator for ID-based cross-module
+  // matching and action-type-based status derivation (see csWorkload.ts).
+  ownerCsId?: string
+  lastActionKind?: MissingBillLastActionKind
 }
 
 export interface MissingBillRecord {

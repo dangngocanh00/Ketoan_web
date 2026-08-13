@@ -13,6 +13,7 @@ import CsUpload from './pages/cs/CsUpload'
 import CsHistory from './pages/cs/CsHistory'
 import { AuthProvider, useAuth } from './auth/AuthContext'
 import { canAccessPage, defaultPageFor, usesAdminUI } from './auth/permissions'
+import { CsScopeProvider } from './domain/csScope'
 import type { Page } from './navigation'
 
 export type { Page }
@@ -53,12 +54,12 @@ function AuthenticatedApp() {
             )}
           </>
         ) : (
-          <>
-            {activePage === 'dashboard' && <CsDashboard />}
+          <CsScopeProvider>
+            {activePage === 'dashboard' && <CsDashboard onNavigateMissingBills={() => navigate('missing-bills')} />}
             {activePage === 'missing-bills' && <CsMissingBills />}
             {activePage === 'upload' && <CsUpload />}
             {activePage === 'audit-log' && <CsHistory />}
-          </>
+          </CsScopeProvider>
         )}
       </main>
     </div>

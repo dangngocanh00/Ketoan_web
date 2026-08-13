@@ -44,18 +44,25 @@ export function defaultPageFor(_role: Role): Page {
 
 // ── Data scope (CS / Leader) ─────────────────────────────────────────────────
 
-// Every CS name (incl. the Leader, who is also a CS) inside a Leader's team,
-// used to bound what a Leader may view. Only ever pulls from the Leader's own
+// Every CS (incl. the Leader, who is also a CS) inside a Leader's team, used
+// to bound what a Leader may view. Only ever pulls from the Leader's own
 // teamId — never from a route parameter — so a Leader can't be pointed at
 // another team's data.
-export function teamScopeCsNames(user: CurrentUser): string[] {
+export function teamScopeCsUsers(user: CurrentUser): { id: string; name: string }[] {
   if (!user.teamId) return []
   const team = teamById[user.teamId]
   if (!team) return []
   const memberIds = team.member_user_ids.includes(user.id)
     ? team.member_user_ids
     : [user.id, ...team.member_user_ids]
-  return memberIds.map(id => userById[id]?.full_name).filter((n): n is string => !!n)
+  return memberIds
+    .map(id => userById[id])
+    .filter((u): u is NonNullable<typeof u> => !!u)
+    .map(u => ({ id: u.user_id, name: u.full_name }))
+}
+
+export function teamScopeCsNames(user: CurrentUser): string[] {
+  return teamScopeCsUsers(user).map(u => u.name)
 }
 
 // Names of CS this user is allowed to VIEW records for. 'all' = no restriction
