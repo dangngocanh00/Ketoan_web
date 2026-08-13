@@ -623,6 +623,12 @@ export interface MissingBillCase {
   // matching and action-type-based status derivation (see csWorkload.ts).
   ownerCsId?: string
   lastActionKind?: MissingBillLastActionKind
+  // Bank txn ids (matching MissingBillRecord.txnId) that this generator
+  // considers already resolved via reconciliation — the RECORD-level backing
+  // for remainingBills/remainingAmount (see domain/bankBills.ts). Never
+  // derived from a Facebook-upload count — see deriveMissingCases() in
+  // sharedData.ts for how this is picked.
+  resolvedBankTxnIds?: string[]
 }
 
 export interface MissingBillRecord {
@@ -644,7 +650,12 @@ export interface EvidenceImage {
   id: string
   name: string
   uploadedAt: string
-  colorBg: string
+  // Legacy demo evidence (Module 1-era seeded history) renders as a flat
+  // color swatch instead of a real image — colorBg. Real evidence captured
+  // through Module 2's explanation form carries an actual image — dataUrl
+  // (base64). Both are optional so either shape renders safely.
+  colorBg?: string
+  dataUrl?: string
 }
 
 export interface ExplanationCase {

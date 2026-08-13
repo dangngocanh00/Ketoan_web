@@ -3,6 +3,7 @@ import { fmt, fmtDate } from '../../data/sharedData'
 import {
   getCsSessionRows, getPersonalKpis, getTodoItems, getCsRecentActivity,
 } from '../../domain/csWorkload'
+import { useExplanationStore } from '../../domain/explanationStore'
 import { Badge, KpiCard, SectionHeader, STATUS_META, formatHoursRemaining } from './shared'
 
 interface Props {
@@ -14,7 +15,9 @@ interface Props {
 }
 
 export default function PersonalDashboard({ csId, csName, readOnly, onProcess }: Props) {
-  const rows = useMemo(() => getCsSessionRows(csId, csName), [csId, csName])
+  const { getLookup } = useExplanationStore()
+  const live = useMemo(() => getLookup(csId), [getLookup, csId])
+  const rows = useMemo(() => getCsSessionRows(csId, csName, live), [csId, csName, live])
   const kpis = useMemo(() => getPersonalKpis(rows), [rows])
   const todos = useMemo(() => getTodoItems(rows), [rows])
   const activity = useMemo(() => getCsRecentActivity(csName, 8), [csName])

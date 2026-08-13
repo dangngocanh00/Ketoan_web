@@ -4,6 +4,8 @@ import {
   mbTeams, mbCsTeamMap, sessionsV2, fmt, fmtDate,
 } from '../data/sharedData'
 import type { MissingBillCase, MissingBillRecord, ExplanationCase, FbSurplusBill } from '../data/mock'
+import { useAuth } from '../auth/AuthContext'
+import { toLegacyExplanationCase, useExplanationStore } from '../domain/explanationStore'
 
 type MainTab = 'missing' | 'approval' | 'surplus'
 type ViewMode = 'list' | 'case_detail' | 'approval_detail'
@@ -505,7 +507,7 @@ function ApprovalDetailPage({
   explanation: ExplanationCase
   onBack: () => void
   onAccepted: (id: string) => void
-  onRejected: (id: string) => void
+  onRejected: (id: string, reason: string) => void
 }) {
   const [lightboxIdx, setLightboxIdx] = useState<number | null>(null)
   const [showRejectModal, setShowRejectModal] = useState(false)
@@ -531,7 +533,7 @@ function ApprovalDetailPage({
     if (!rejectReason.trim()) return
     setShowRejectModal(false)
     setActionDone('rejected')
-    setTimeout(() => onRejected(explanation.id), 1400)
+    setTimeout(() => onRejected(explanation.id, rejectReason), 1400)
   }
 
   function handleAcceptConfirm() {
@@ -624,11 +626,17 @@ function ApprovalDetailPage({
                 <div
                   key={img.id}
                   onClick={() => setLightboxIdx(idx)}
-                  style={{ width: 80, height: 64, borderRadius: 7, background: img.colorBg, border: '1px solid #E4E7EC', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 4, transition: 'opacity 0.15s' }}
+                  style={{ width: 80, height: 64, borderRadius: 7, overflow: 'hidden', background: img.colorBg || '#F2F4F7', border: '1px solid #E4E7EC', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 4, transition: 'opacity 0.15s' }}
                   title={img.name}
                 >
-                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><rect x="2" y="4" width="16" height="12" rx="2" stroke="#667085" strokeWidth="1.3" /><circle cx="7" cy="8.5" r="1.5" stroke="#667085" strokeWidth="1.3" /><path d="M2 13l4-4 3 3 3-2 4 3" stroke="#667085" strokeWidth="1.3" strokeLinejoin="round" /></svg>
-                  <span style={{ fontSize: 9.5, color: '#667085', textAlign: 'center', padding: '0 4px', lineHeight: 1.2 }}>{idx + 1}</span>
+                  {img.dataUrl ? (
+                    <img src={img.dataUrl} alt={img.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  ) : (
+                    <>
+                      <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><rect x="2" y="4" width="16" height="12" rx="2" stroke="#667085" strokeWidth="1.3" /><circle cx="7" cy="8.5" r="1.5" stroke="#667085" strokeWidth="1.3" /><path d="M2 13l4-4 3 3 3-2 4 3" stroke="#667085" strokeWidth="1.3" strokeLinejoin="round" /></svg>
+                      <span style={{ fontSize: 9.5, color: '#667085', textAlign: 'center', padding: '0 4px', lineHeight: 1.2 }}>{idx + 1}</span>
+                    </>
+                  )}
                 </div>
               ))}
             </div>
@@ -726,10 +734,18 @@ function ApprovalDetailPage({
             {lightboxIdx + 1} / {explanation.evidenceImages.length}
           </div>
           <div
-            style={{ width: 480, height: 340, borderRadius: 12, background: explanation.evidenceImages[lightboxIdx].colorBg, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10 }}
+            style={{ width: 480, height: 340, borderRadius: 12, overflow: 'hidden', background: explanation.evidenceImages[lightboxIdx].colorBg || '#1D2939', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10 }}
             onClick={e => e.stopPropagation()}
           >
-            <svg width="48" height="48" viewBox="0 0 48 48" fill="none"><rect x="4" y="9" width="40" height="30" rx="4" stroke="#667085" strokeWidth="2" /><circle cx="16" cy="20" r="4" stroke="#667085" strokeWidth="2" /><path d="M4 31l12-10 8 8 7-5 13 8" stroke="#667085" strokeWidth="2" strokeLinejoin="round" /></svg>
+            {explanation.evidenceImages[lightboxIdx].dataUrl ? (
+              <img
+                src={explanation.evidenceImages[lightboxIdx].dataUrl}
+                alt={explanation.evidenceImages[lightboxIdx].name}
+                style={{ maxWidth: '90%', maxHeight: '75%', objectFit: 'contain' }}
+              />
+            ) : (
+              <svg width="48" height="48" viewBox="0 0 48 48" fill="none"><rect x="4" y="9" width="40" height="30" rx="4" stroke="#667085" strokeWidth="2" /><circle cx="16" cy="20" r="4" stroke="#667085" strokeWidth="2" /><path d="M4 31l12-10 8 8 7-5 13 8" stroke="#667085" strokeWidth="2" strokeLinejoin="round" /></svg>
+            )}
             <div style={{ fontSize: 12.5, color: '#667085', textAlign: 'center' }}>
               <div>{explanation.evidenceImages[lightboxIdx].name}</div>
               <div style={{ fontSize: 11.5, marginTop: 2 }}>Upload lúc {explanation.evidenceImages[lightboxIdx].uploadedAt}</div>
@@ -895,6 +911,20 @@ export default function MissingBills() {
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null)
   const [selectedExplanationId, setSelectedExplanationId] = useState<string | null>(null)
 
+  // Cross-role explanation: CS/Leader submit into this SAME shared store
+  // (ExplanationStoreProvider is mounted at the App root — see App.tsx), so
+  // Tab 2 below and its detail view read the live case list instead of the
+  // static `explanationCases` import — this local const intentionally
+  // shadows that import for the rest of this component. Legacy demo cases
+  // (Nam pending, Trang rejected, ...) are seeded into the same store, so
+  // nothing here is a duplicate/second source.
+  const { currentUser } = useAuth()
+  const { cases: liveExplanationCases, review } = useExplanationStore()
+  const explanationCases = useMemo(
+    () => liveExplanationCases.filter(c => c.status === 'pending').map(toLegacyExplanationCase),
+    [liveExplanationCases],
+  )
+
   // Shared filters
   const [dateFilter, setDateFilter] = useState('')
   const [teamFilter, setTeamFilter] = useState('all')
@@ -998,11 +1028,28 @@ export default function MissingBills() {
   }
 
   function handleAccepted(expId: string) {
+    // Update the SAME shared case/attempt CS will see — never a local-only
+    // flag. `closedExplanationIds` below stays purely for this page's own
+    // "case disappears from the list" transition, on top of the real update.
+    const liveCase = liveExplanationCases.find(c => c.id === expId)
+    if (liveCase) {
+      review({
+        csId: liveCase.csId, sessionId: liveCase.sessionId,
+        decision: 'accepted', reviewedBy: currentUser?.displayName ?? 'Kế toán',
+      })
+    }
     setClosedExplanationIds(prev => [...prev, expId])
     handleBack()
   }
 
-  function handleRejected(expId: string) {
+  function handleRejected(expId: string, reason: string) {
+    const liveCase = liveExplanationCases.find(c => c.id === expId)
+    if (liveCase) {
+      review({
+        csId: liveCase.csId, sessionId: liveCase.sessionId,
+        decision: 'rejected', reviewedBy: currentUser?.displayName ?? 'Kế toán', rejectReason: reason,
+      })
+    }
     setRejectedExplanationIds(prev => [...prev, expId])
     handleBack()
   }

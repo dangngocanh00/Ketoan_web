@@ -19,11 +19,28 @@ export interface MissingBillFocus {
   readOnly: boolean
 }
 
+// Where a "member" scope was entered FROM, when that origin was specifically
+// the Team table's "Xem" (drill-down) — not a direct dropdown switch. Only
+// ever set by that one entry point; used purely to decide whether to show
+// "← Quay lại Toàn Team" and which session to restore on Back.
+export interface TeamDrillDownOrigin {
+  sessionId: string
+}
+
 interface CsScopeContextValue {
   scope: CsScope
   setScope: (s: CsScope) => void
   missingBillFocus: MissingBillFocus | null
   requestMissingBillFocus: (f: MissingBillFocus) => void
+  // §15/§24 contract: Bill thiếu's "+ Bổ sung Bill Facebook" CTA passes ONLY
+  // a sessionId to the Upload module — never a Bank Bill id (CS doesn't
+  // process individual bills) and never a csId (upload always belongs to
+  // currentUser, regardless of whatever Leader scope is active — §24).
+  uploadFocusSessionId: string | null
+  requestUploadFocus: (sessionId: string) => void
+  drillDownOrigin: TeamDrillDownOrigin | null
+  beginTeamDrillDown: (sessionId: string) => void
+  clearDrillDownOrigin: () => void
 }
 
 const CsScopeContext = createContext<CsScopeContextValue | null>(null)
@@ -34,6 +51,8 @@ const CsScopeContext = createContext<CsScopeContextValue | null>(null)
 export function CsScopeProvider({ children }: { children: ReactNode }) {
   const [scope, setScope] = useState<CsScope>({ kind: 'self' })
   const [missingBillFocus, setMissingBillFocus] = useState<MissingBillFocus | null>(null)
+  const [uploadFocusSessionId, setUploadFocusSessionId] = useState<string | null>(null)
+  const [drillDownOrigin, setDrillDownOrigin] = useState<TeamDrillDownOrigin | null>(null)
 
   const value = useMemo<CsScopeContextValue>(
     () => ({
@@ -41,8 +60,13 @@ export function CsScopeProvider({ children }: { children: ReactNode }) {
       setScope,
       missingBillFocus,
       requestMissingBillFocus: setMissingBillFocus,
+      uploadFocusSessionId,
+      requestUploadFocus: setUploadFocusSessionId,
+      drillDownOrigin,
+      beginTeamDrillDown: (sessionId: string) => setDrillDownOrigin({ sessionId }),
+      clearDrillDownOrigin: () => setDrillDownOrigin(null),
     }),
-    [scope, missingBillFocus],
+    [scope, missingBillFocus, uploadFocusSessionId, drillDownOrigin],
   )
 
   return <CsScopeContext.Provider value={value}>{children}</CsScopeContext.Provider>

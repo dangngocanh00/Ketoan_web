@@ -7,6 +7,16 @@
  */
 import { sessionsV2, missingBillCases, explanationCases, auditLog } from '../data/sharedData'
 import type { AuditEntry, MissingBillCase, MissingBillLastActionKind, SessionStatusV2 } from '../data/mock'
+import { getUnresolvedSummary } from './bankBills'
+import type { LiveExplanationLookup } from './explanationStore'
+
+const EMPTY_IDS: ReadonlySet<string> = new Set()
+const NOOP_LIVE: LiveExplanationLookup = {
+  isPending: () => false,
+  hasAnyAttempt: () => false,
+  getResolvedIds: () => EMPTY_IDS,
+  getPendingSnapshot: () => null,
+}
 
 export type CsDisplayStatus = 'chua_xu_ly' | 'dang_xu_ly' | 'cho_duyet' | 'sap_het_han'
 export type TeamMemberStatus = CsDisplayStatus | 'hoan_tat'
@@ -48,13 +58,15 @@ function isCsAction(kind: MissingBillLastActionKind | undefined): boolean {
   return kind === 'cs_upload' || kind === 'cs_explanation_submitted' || kind === 'cs_explanation_rejected'
 }
 
-// Amount thiếu is ALWAYS the outstanding Bank-bill amount (mbc.remainingAmount,
-// which sharedData.ts derives purely from bank txns) — never Facebook amount.
-function deriveDisplayStatus(mbc: MissingBillCase, pendingExplanation: boolean): CsDisplayStatus {
+// Amount thiếu is ALWAYS the outstanding Bank-bill amount — record-level
+// (see domain/bankBills.ts), never Facebook amount, never a Sheet-spend gap.
+function deriveDisplayStatus(
+  missingBills: number, hoursRemaining: number, pendingExplanation: boolean, hasAction: boolean,
+): CsDisplayStatus {
   if (pendingExplanation) return 'cho_duyet'
-  const nearDeadline = mbc.hoursRemaining > 0 && mbc.hoursRemaining < 6
-  if (mbc.remainingBills > 0 && nearDeadline) return 'sap_het_han'
-  return isCsAction(mbc.lastActionKind) ? 'dang_xu_ly' : 'chua_xu_ly'
+  const nearDeadline = hoursRemaining > 0 && hoursRemaining < 6
+  if (missingBills > 0 && nearDeadline) return 'sap_het_han'
+  return hasAction ? 'dang_xu_ly' : 'chua_xu_ly'
 }
 
 export interface CsSessionRow {
@@ -87,27 +99,39 @@ export function sortSessionRows<T extends { status: CsDisplayStatus; hoursRemain
 // Matches by ownerCsId (a real user id, set by sharedData.ts's generator) —
 // not by display name — per §5's ID-based cross-module relationship; csName
 // is only needed for the explanationCases join (that dataset has no CS id).
-export function getCsSessionRows(csId: string, csName: string): CsSessionRow[] {
+//
+// `live` bridges Module 2's explanationStore (submit/accept/reject) back
+// into these numbers — e.g. after an ACCEPT, the accepted Bank Bills stop
+// counting as missing, and if that clears the case entirely the session
+// drops off "Phiên cần xử lý" here automatically (task §50/72). Pure/optional
+// so this module stays store-agnostic; callers without a live store (or old
+// call sites) get byte-identical behavior to before via the no-op default.
+export function getCsSessionRows(csId: string, csName: string, live: LiveExplanationLookup = NOOP_LIVE): CsSessionRow[] {
   const openIds = openSessionIds()
   const rows: CsSessionRow[] = []
   for (const mbc of missingBillCases) {
     if (mbc.ownerCsId !== csId || !openIds.has(mbc.sessionId)) continue
-    const pending = hasPendingExplanation(csName, mbc.sessionDate)
-    if (mbc.remainingBills <= 0 && !pending) continue
+    const staticPending = hasPendingExplanation(csName, mbc.sessionDate)
+    const livePending = live.isPending(mbc.sessionId)
+    const pendingExplanation = !!staticPending || livePending
+    const { bills: missingBills, amount: missingAmount } = getUnresolvedSummary(mbc, live.getResolvedIds(mbc.sessionId))
+    if (missingBills <= 0 && !pendingExplanation) continue
+    const liveSnapshot = livePending ? live.getPendingSnapshot(mbc.sessionId) : null
+    const hasAction = isCsAction(mbc.lastActionKind) || live.hasAnyAttempt(mbc.sessionId)
     rows.push({
       sessionId: mbc.sessionId,
       sessionDate: mbc.sessionDate,
-      status: deriveDisplayStatus(mbc, !!pending),
-      missingBills: mbc.remainingBills,
-      missingAmount: mbc.remainingAmount,
-      explanationPending: !!pending,
-      explanationBills: pending?.bills ?? mbc.remainingBills,
-      explanationAmount: pending ? round2(pending.totalAmount) : mbc.remainingAmount,
+      status: deriveDisplayStatus(missingBills, mbc.hoursRemaining, pendingExplanation, hasAction),
+      missingBills,
+      missingAmount,
+      explanationPending: pendingExplanation,
+      explanationBills: liveSnapshot?.bills ?? staticPending?.bills ?? missingBills,
+      explanationAmount: liveSnapshot?.amount ?? (staticPending ? round2(staticPending.totalAmount) : missingAmount),
       deadline: mbc.processingDeadline,
       hoursRemaining: mbc.hoursRemaining,
       lastActionDesc: mbc.lastActionDesc,
       lastActionKind: mbc.lastActionKind ?? 'none',
-      hasAction: isCsAction(mbc.lastActionKind),
+      hasAction,
     })
   }
   return sortSessionRows(rows)
@@ -234,9 +258,12 @@ export interface TeamMemberRow {
   lastActionDesc: string
 }
 
-export function getTeamMemberRows(members: { id: string; name: string }[]): TeamMemberRow[] {
+export function getTeamMemberRows(
+  members: { id: string; name: string }[],
+  getLiveLookup: (csId: string) => LiveExplanationLookup = () => NOOP_LIVE,
+): TeamMemberRow[] {
   return members.map(m => {
-    const rows = getCsSessionRows(m.id, m.name) // already sorted worst-first
+    const rows = getCsSessionRows(m.id, m.name, getLiveLookup(m.id)) // already sorted worst-first
     const activeSessions = countOpenCaseSessions(m.id)
     if (rows.length === 0) {
       const recent = getCsRecentActivity(m.name, 1)[0]

@@ -84,6 +84,11 @@ const USER_TKQC: Record<string, string> = {
   'USR-016': '562718302...',
 }
 
+// Exported TKQC-per-user lookup — Module 2's "TKQC cần tìm Bill" section reads
+// this directly instead of re-deriving ownership (current dataset models one
+// TKQC per user; see domain/bankBills.ts for the session-date-ownership note).
+export const tkqcByUser: Record<string, string> = USER_TKQC
+
 // Cards per user (last4)
 const USER_CARDS: Record<string, string[]> = {
   'USR-001': ['6602','1145'], 'USR-002': ['8821','4312'], 'USR-003': ['7744','9201'], 'USR-004': ['4482','6615'],
@@ -648,6 +653,12 @@ function deriveMissingCases(): MissingBillCase[] {
     const suppAmtSafe = Math.max(0, Math.min(suppAmt, initialAmount))
     const remainingBills = initialBills - suppBillsSafe
     const remainingAmount = Math.round((initialAmount - suppAmtSafe) * 100) / 100
+    // The specific bank txn ids the "supplemented" count above refers to —
+    // domain/bankBills.ts (Module 2) reads THIS to know exactly which
+    // individual Bank Bill records are already resolved, instead of the
+    // case-level count. By construction (same slice, same source array as
+    // missingBillRecords) this is always consistent with remainingBills.
+    const resolvedBankTxnIds = grp.slice(0, suppBillsSafe).map(t => t.id)
     const pendingBills = hasExplanation ? remainingBills : 0
     const pendingAmount = hasExplanation ? remainingAmount : 0
 
@@ -670,6 +681,7 @@ function deriveMissingCases(): MissingBillCase[] {
       processingDeadline: deadline, hoursRemaining: hoursRem,
       t0, notifiedAt,
       reminderSentAt: rng3.next() < 0.6 ? `${fmtDisp(date)} 10:25` : undefined,
+      resolvedBankTxnIds,
     }
   })
 }
@@ -728,6 +740,14 @@ export const explanationCases: ExplanationCase[] = allExpCases
     delete clean['status']
     return clean as unknown as ExplanationCase
   })
+
+// Full explanation history (pending/accepted/rejected), status kept — used by
+// domain/explanationStore.tsx to seed the Module 2 case+attempt model with
+// the SAME underlying demo cases (Nam/Trang/historical), never a duplicate
+// dataset. Admin's existing Tab 2 keeps using the filtered `explanationCases`
+// above unchanged.
+export const allExplanationCasesRaw: (ExplanationCase & { status: 'pending' | 'accepted' | 'rejected' })[] =
+  allExpCases as unknown as (ExplanationCase & { status: 'pending' | 'accepted' | 'rejected' })[]
 
 // FB surplus bills
 export const fbSurplusBills: FbSurplusBill[] = allSurplusBills

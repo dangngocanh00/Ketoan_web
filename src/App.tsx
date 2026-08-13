@@ -14,6 +14,7 @@ import CsHistory from './pages/cs/CsHistory'
 import { AuthProvider, useAuth } from './auth/AuthContext'
 import { canAccessPage, defaultPageFor, usesAdminUI } from './auth/permissions'
 import { CsScopeProvider } from './domain/csScope'
+import { ExplanationStoreProvider } from './domain/explanationStore'
 import type { Page } from './navigation'
 
 export type { Page }
@@ -56,7 +57,7 @@ function AuthenticatedApp() {
         ) : (
           <CsScopeProvider>
             {activePage === 'dashboard' && <CsDashboard onNavigateMissingBills={() => navigate('missing-bills')} />}
-            {activePage === 'missing-bills' && <CsMissingBills />}
+            {activePage === 'missing-bills' && <CsMissingBills onNavigateUpload={() => navigate('upload')} />}
             {activePage === 'upload' && <CsUpload />}
             {activePage === 'audit-log' && <CsHistory />}
           </CsScopeProvider>
@@ -74,7 +75,15 @@ function Gate() {
 export default function App() {
   return (
     <AuthProvider>
-      <Gate />
+      {/* Mounted above the login gate itself (not just the CS branch) so the
+          shared explanation store survives switching between roles within
+          the same browser tab — CS submits, logs out, Admin logs in and
+          sees the SAME case (task: "cross-role explanation — bắt buộc
+          shared"). It resets on a real page reload since there is no
+          backend/persistence layer in this prototype — see report. */}
+      <ExplanationStoreProvider>
+        <Gate />
+      </ExplanationStoreProvider>
     </AuthProvider>
   )
 }
