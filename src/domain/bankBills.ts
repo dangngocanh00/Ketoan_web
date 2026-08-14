@@ -7,12 +7,9 @@
  *  - TKQC Sheet-spend-vs-Facebook-Bill gap → only ever a hint of WHICH TKQC
  *    to go look for a Bill in. Never feeds back into the Bank Bill numbers.
  */
-import { missingBillCases, missingBillRecords, sessionDetails, sessionsV2, tkqcByUser } from '../data/sharedData'
-import type { MissingBillCase, MissingBillRecord, SessionStatusV2 } from '../data/mock'
-
-// Mirrors csWorkload.ts's OPEN_STATUSES — duplicated (not imported) to avoid
-// a circular import (csWorkload.ts imports from this file).
-const OPEN_STATUSES: SessionStatusV2[] = ['active', 'closing_soon']
+import { missingBillCases, missingBillRecords, sessionDetails, sessionsV2 } from '../data/sharedData'
+import type { MissingBillCase, MissingBillRecord } from '../data/mock'
+import { OPEN_STATUSES } from './sessionLifecycle'
 
 const EMPTY_SET: ReadonlySet<string> = new Set()
 
@@ -102,33 +99,50 @@ export interface TkqcGapRow {
 const SHEET_RATIO = 1.02 // same Sheet-vs-Bank ratio sessionsV2.sheetTotal already uses at session level
 const GAP_THRESHOLD = 0.5 // ignore sub-$1 gaps — floating point / rounding noise, not a real "missing Bill"
 
-// LIMITATION: the current shared dataset has exactly one static TKQC per
-// user (no TKQC reassignment history — see permissions.resolveTkqcOwnerAt's
-// note), so this only ever returns 0 or 1 row today. The loop structure
-// supports N TKQC per CS/session once the dataset models that.
-export function getTkqcGapsForCs(csId: string, sessionId: string): TkqcGapRow[] {
-  const tkqcId = tkqcByUser[csId]
+// §36-40 (TKQC Chạy Chung): this file has NO knowledge of Shared
+// Cards/declarations/ownership resolution at all — it just computes a gap
+// for whatever `tkqcIds` it's handed. The CALLER (PersonalMissingBills.tsx)
+// assembles that list via `useTkqcDeclarationStore().getResolvedTkqcIdsForCs`
+// — the CS's own non-shared TKQC (unchanged, task §40) plus any Shared Card
+// TKQC currently RESOLVED to them (never Unassigned/Conflict ones, task
+// §38/39) — keeping ownership resolution and Sheet-spend math fully
+// separate concerns.
+//
+// `getLiveFbAmount` (Module 3, §40 of the earlier Upload task): FB Bills a
+// CS has ALREADY uploaded through facebookUploadStore for a given TKQC/
+// session aren't in the static sessionDetails snapshot — the caller supplies
+// the live sum per tkqcId so the gap reacts immediately after an upload,
+// without this file depending on that store directly.
+export function getTkqcGapsForCs(
+  tkqcIds: string[],
+  sessionId: string,
+  getLiveFbAmount: (tkqcId: string) => number = () => 0,
+): TkqcGapRow[] {
   const detail = sessionDetails[sessionId]
-  if (!tkqcId || !detail) return []
+  if (!detail || tkqcIds.length === 0) return []
 
-  const bankSide =
-    detail.reconciled.filter(r => r.tkqc === tkqcId).reduce((s, r) => s + r.bankAmount, 0) +
-    detail.exceptions.filter(r => r.tkqc === tkqcId).reduce((s, r) => s + r.bankAmount, 0) +
-    detail.bankUnreconciled.filter(r => r.tkqc === tkqcId).reduce((s, r) => s + r.amount, 0)
+  const rows: TkqcGapRow[] = []
+  for (const tkqcId of tkqcIds) {
+    const bankSide =
+      detail.reconciled.filter(r => r.tkqc === tkqcId).reduce((s, r) => s + r.bankAmount, 0) +
+      detail.exceptions.filter(r => r.tkqc === tkqcId).reduce((s, r) => s + r.bankAmount, 0) +
+      detail.bankUnreconciled.filter(r => r.tkqc === tkqcId).reduce((s, r) => s + r.amount, 0)
 
-  const fbSide =
-    detail.reconciled.filter(r => r.tkqc === tkqcId).reduce((s, r) => s + r.fbAmount, 0) +
-    detail.exceptions.filter(r => r.tkqc === tkqcId).reduce((s, r) => s + r.fbAmount, 0) +
-    detail.fbUnreconciled.filter(r => r.tkqc === tkqcId).reduce((s, r) => s + r.amount, 0)
+    const fbSide =
+      detail.reconciled.filter(r => r.tkqc === tkqcId).reduce((s, r) => s + r.fbAmount, 0) +
+      detail.exceptions.filter(r => r.tkqc === tkqcId).reduce((s, r) => s + r.fbAmount, 0) +
+      detail.fbUnreconciled.filter(r => r.tkqc === tkqcId).reduce((s, r) => s + r.amount, 0) +
+      getLiveFbAmount(tkqcId)
 
-  // Sheet spend is an independent client-reported figure — approximated here
-  // from the Bank side using the SAME ratio already established at session
-  // level (sessionsV2.sheetTotal = bankTotal * 1.02), not a new invented
-  // number. A real per-TKQC Sheet feed would replace this later.
-  const sheetSpend = round2(bankSide * SHEET_RATIO)
-  const fbRecorded = round2(fbSide)
-  const gap = round2(sheetSpend - fbRecorded)
+    // Sheet spend is an independent client-reported figure — approximated
+    // here from the Bank side using the SAME ratio already established at
+    // session level (sessionsV2.sheetTotal = bankTotal * 1.02), not a new
+    // invented number. A real per-TKQC Sheet feed would replace this later.
+    const sheetSpend = round2(bankSide * SHEET_RATIO)
+    const fbRecorded = round2(fbSide)
+    const gap = round2(sheetSpend - fbRecorded)
 
-  if (gap <= GAP_THRESHOLD) return []
-  return [{ tkqcId, sheetSpend, fbRecorded, gap, hasNoBill: fbRecorded <= GAP_THRESHOLD }]
+    if (gap > GAP_THRESHOLD) rows.push({ tkqcId, sheetSpend, fbRecorded, gap, hasNoBill: fbRecorded <= GAP_THRESHOLD })
+  }
+  return rows
 }

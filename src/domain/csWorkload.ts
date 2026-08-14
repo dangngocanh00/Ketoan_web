@@ -6,8 +6,9 @@
  * those other modules read from the same source.
  */
 import { sessionsV2, missingBillCases, explanationCases, auditLog } from '../data/sharedData'
-import type { AuditEntry, MissingBillCase, MissingBillLastActionKind, SessionStatusV2 } from '../data/mock'
+import type { AuditEntry, MissingBillCase, MissingBillLastActionKind } from '../data/mock'
 import { getUnresolvedSummary } from './bankBills'
+import { OPEN_STATUSES, isOverdue } from './sessionLifecycle'
 import type { LiveExplanationLookup } from './explanationStore'
 
 const EMPTY_IDS: ReadonlySet<string> = new Set()
@@ -18,10 +19,15 @@ const NOOP_LIVE: LiveExplanationLookup = {
   getPendingSnapshot: () => null,
 }
 
-export type CsDisplayStatus = 'chua_xu_ly' | 'dang_xu_ly' | 'cho_duyet' | 'sap_het_han'
+// 'ton_dong' ("Còn tồn đọng", Module 4 task §2/51): session is NOT Closed,
+// its deadline has already passed, and real unresolved workload remains.
+// Purely a DISPLAY status for still-open sessions — never a lifecycle
+// state, never routes the session into History (see sessionLifecycle.ts).
+export type CsDisplayStatus = 'chua_xu_ly' | 'dang_xu_ly' | 'cho_duyet' | 'sap_het_han' | 'ton_dong'
 export type TeamMemberStatus = CsDisplayStatus | 'hoan_tat'
 
 const STATUS_PRIORITY: Record<CsDisplayStatus, number> = {
+  ton_dong: -1,
   sap_het_han: 0,
   cho_duyet: 1,
   dang_xu_ly: 2,
@@ -36,7 +42,6 @@ const TEAM_STATUS_PRIORITY: Record<TeamMemberStatus, number> = {
 // A session only counts toward the CS/Leader dashboard while it's still
 // open for action. Closed/closed_pending sessions (incl. quá hạn cases) are
 // history — Module Lịch sử, not this dashboard (see task spec §8, §13, §16).
-const OPEN_STATUSES: SessionStatusV2[] = ['active', 'closing_soon']
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100
@@ -63,7 +68,11 @@ function isCsAction(kind: MissingBillLastActionKind | undefined): boolean {
 function deriveDisplayStatus(
   missingBills: number, hoursRemaining: number, pendingExplanation: boolean, hasAction: boolean,
 ): CsDisplayStatus {
+  // §53: a pending explanation is the CS's current action state — it wins
+  // even over an already-overdue deadline (the session is still "chờ
+  // duyệt", not just generically "tồn đọng").
   if (pendingExplanation) return 'cho_duyet'
+  if (missingBills > 0 && isOverdue(hoursRemaining)) return 'ton_dong'
   const nearDeadline = hoursRemaining > 0 && hoursRemaining < 6
   if (missingBills > 0 && nearDeadline) return 'sap_het_han'
   return hasAction ? 'dang_xu_ly' : 'chua_xu_ly'

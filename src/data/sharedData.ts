@@ -105,7 +105,11 @@ function subtractDays(base: string, n: number): string {
   return d.toISOString().slice(0, 10)
 }
 
-const TODAY = '2026-08-13'
+// Exported as the app's single canonical "now" reference (never real
+// wall-clock Date()) — domain code that needs a "current effective date"
+// for temporal logic (e.g. tkqcDeclarationStore.tsx) reads THIS, so it
+// stays consistent with every other date-derived value in this dataset.
+export const TODAY = '2026-08-13'
 const SESSION_DATES = Array.from({ length: 30 }, (_, i) => subtractDays(TODAY, i))
 // [0]='2026-08-13' active, [1]='2026-08-12' active, [4]='2026-08-09' sv1, [5]='2026-08-08' sv2, etc.
 
@@ -153,7 +157,12 @@ const _generated = (() => {
 
   const txns: Txn[] = []
 
-  function makeTxn(date: string, uid: string, kind: Txn['kind'], amt?: number, ref?: string, last4?: string): Txn {
+  // `tkqcOverride` (optional, additive — every existing call site is
+  // unaffected): lets the "TKQC Chạy Chung" demo fixtures tag a handful of
+  // txns with a specific Shared Card TKQC id instead of the CS's own
+  // default one, without touching makeTxn's existing behavior for anyone
+  // else.
+  function makeTxn(date: string, uid: string, kind: Txn['kind'], amt?: number, ref?: string, last4?: string, tkqcOverride?: string): Txn {
     const u = userById[uid]
     const l4 = last4 || rng.pick(USER_CARDS[uid] || ['0000'])
     const a = amt ?? rng.amt(22, 620)
@@ -162,7 +171,7 @@ const _generated = (() => {
       id: `BANK-TXN-${rng.pad(++bankSeq, 6)}`,
       sid: SID(date), date, disp: fmtDisp(date),
       uid, team: teamById[u.team_id].team_name, name: u.full_name,
-      tkqc: USER_TKQC[uid] || '000000000...',
+      tkqc: tkqcOverride || USER_TKQC[uid] || '000000000...',
       ref: r, last4: l4, amt: a, kind,
       fbBillId: (kind === 'matched' || kind === 'exception')
         ? `FB-BILL-${rng.pad(++fbSeq, 6)}` : undefined,
@@ -421,6 +430,60 @@ const _generated = (() => {
   for (let i = 0; i < 3; i++) txns.push(makeTxn('2026-08-12', 'USR-001', 'unreconciled', rng.amt(20, 140)))
   for (let i = 0; i < 3; i++) txns.push(makeTxn('2026-08-11', 'USR-001', 'unreconciled', rng.amt(20, 140)))
 
+  // ── Module 4 (Lịch sử) demo data — added LAST, same reasoning as the
+  // Leader block above: nothing below reads from `rng` after this point, so
+  // these additions cannot shift any earlier computed value. ──────────────
+
+  // "Còn tồn đọng" (task §2/51): Linh (USR-006) on 2026-08-10. That session
+  // is 'closing_soon' (NOT Closed), but its OWN processingDeadline (date+2
+  // = 2026-08-12) has already passed relative to TODAY (2026-08-13) — the
+  // session-level hoursRemaining placeholder used elsewhere (35/5/0) doesn't
+  // capture that. deriveMissingCases() overrides Linh's case specifically
+  // (isLinhTonDong) to reflect the real, already-passed deadline.
+  for (let i = 0; i < 5; i++) txns.push(makeTxn('2026-08-10', 'USR-006', 'unreconciled', rng.amt(20, 140)))
+
+  // History demo: an ACCEPTED explanation on a CLOSED session (Mạnh,
+  // 2026-07-20) resolving ONE of his 2 remaining Bank Bills there — the
+  // OTHER stays genuinely unresolved at closure. Gives Module 4 a real
+  // mixed Final Result (FB-matched + explanation-resolved + unresolved all
+  // present in the same closed session) and a real "Xử lý bằng giải trình"
+  // case to show in the detail view (task §29-31/64). Fixed content, same
+  // pattern as Nam/Trang's fixed cases above — `makeEvidence` is the only
+  // rng-consuming call, which is why this whole block sits down here in the
+  // safe end-zone rather than up with Nam/Trang's.
+  const manh0720Unresolved = txns.filter(t => t.date === '2026-07-20' && t.uid === 'USR-002' && t.kind === 'unreconciled')
+  if (manh0720Unresolved.length > 0) {
+    const covered = [manh0720Unresolved[0]]
+    expCases.push({
+      id: 'EXPLANATION-CLOSED-001', caseId: 'mb-USR-002-20260720', cs: 'Mạnh', team: 'Team Alpha',
+      sessionDate: '2026-07-20', bills: covered.length,
+      totalAmount: Math.round(covered.reduce((s, t) => s + t.amt, 0) * 100) / 100,
+      reasons: ['acc_die'],
+      submittedAt: '21/07/2026 09:15', waitingDuration: '—', status: 'accepted' as const,
+      evidenceImages: makeEvidence(1, 'manh-closed'),
+      billList: covered.map((t, i) => ({ id: `bl-mc-${i}`, tkqcId: t.tkqc, last4: t.last4, reference: t.ref, amount: t.amt })),
+    } as unknown as ExplanationCase)
+  }
+
+  // "TKQC Chạy Chung" demo data (Card 5252, Mạnh + Huyền — see
+  // domain/sheetTongHop.ts). Real Bank Bill data tagged with the new Shared
+  // Card TKQC ids, so Module 2's "TKQC cần tìm Bill" has genuine Sheet-vs-FB
+  // gap numbers to filter by resolved ownership (task §36-39/82-84) rather
+  // than an empty/simulated list. `tkqcOverride` (added above) keeps this
+  // fully additive — no existing txn/case is touched.
+  //  - Open session (2026-08-13): one gap-producing TKQC each for Mạnh
+  //    (SHARED-5252-A) and Huyền (SHARED-5252-D) — live/operational demo.
+  //  - Closed session (2026-07-15, already Mạnh's existing "Còn ngoại lệ"
+  //    History demo): one more Bank Bill on SHARED-5252-A, so Module 4's
+  //    History immutability (task §86) has a REAL shared-card TKQC to
+  //    verify against (closure snapshot must keep showing Mạnh as owner
+  //    regardless of any later live declaration change).
+  txns.push(makeTxn('2026-08-13', 'USR-002', 'unreconciled', 90, 'SHR5252A1', '5252', 'SHARED-5252-A'))
+  txns.push(makeTxn('2026-08-13', 'USR-002', 'unreconciled', 60, 'SHR5252A2', '5252', 'SHARED-5252-A'))
+  txns.push(makeTxn('2026-08-13', 'USR-003', 'unreconciled', 70, 'SHR5252D1', '5252', 'SHARED-5252-D'))
+  txns.push(makeTxn('2026-08-13', 'USR-003', 'unreconciled', 50, 'SHR5252D2', '5252', 'SHARED-5252-D'))
+  txns.push(makeTxn('2026-07-15', 'USR-002', 'unreconciled', 40, 'SHR5252A3', '5252', 'SHARED-5252-A'))
+
   auditEvents.push(
     {
       id: `AUDIT-${rng.pad(++auditSeq, 6)}`,
@@ -583,6 +646,10 @@ function deriveMissingCases(): MissingBillCase[] {
     const isDung0813 = uid === 'USR-001' && date === '2026-08-13'
     const isDung0812 = uid === 'USR-001' && date === '2026-08-12'
     const isDung0811 = uid === 'USR-001' && date === '2026-08-11'
+    // Module 4 (Lịch sử) demo scenarios — see the "Module 4 demo data" block
+    // above for why these specific dates/CS were picked and why they're safe.
+    const isLinhTonDong = uid === 'USR-006' && date === '2026-08-10'
+    const isManhClosedComplete = uid === 'USR-002' && date === '2026-07-29'
 
     let suppBills = 0, suppAmt = 0, caseStatus: 'chua_xu_ly' | 'dang_xu_ly' | 'cho_duyet' | 'qua_han'
     let lastActionDesc = 'Chưa có'
@@ -621,6 +688,22 @@ function deriveMissingCases(): MissingBillCase[] {
       // No action yet; session <6h to deadline flips the DISPLAY status to
       // "Sắp hết hạn" in csWorkload.ts regardless of this workflow status.
       suppBills = 0; suppAmt = 0; caseStatus = 'chua_xu_ly'; lastActionDesc = 'Chưa có'; lastActionKind = 'none'
+    } else if (isLinhTonDong) {
+      // Deadline already passed but session is still 'closing_soon' (not
+      // Closed) — real unresolved workload remains. Exercises the NEW
+      // canonical "Còn tồn đọng" operational status (task §2/51): must
+      // never auto-close, CS must keep being able to act on it normally
+      // (Module 2/3 acceptance §54/67).
+      suppBills = 0; suppAmt = 0; caseStatus = 'chua_xu_ly'; lastActionDesc = 'Chưa có'; lastActionKind = 'none'
+    } else if (isManhClosedComplete) {
+      // History demo (Module 4): force this ONE already-closed case fully
+      // resolved via reconciliation match — no case in the generated
+      // dataset reaches "Hoàn tất" naturally (every closed-session case
+      // keeps some randomly-unresolved remainder), so this exercises a
+      // real "Hoàn tất" Final Result end-to-end.
+      suppBills = initialBills
+      suppAmt = initialAmount
+      caseStatus = 'dang_xu_ly'; lastActionDesc = 'Upload Bill bổ sung · phiên đã đóng'; lastActionKind = 'cs_upload'
     } else if (sessStatus === 'closed' || sessStatus === 'closed_pending') {
       caseStatus = rng3.next() < 0.3 ? 'qua_han' : 'dang_xu_ly'
       lastActionDesc = caseStatus === 'qua_han' ? 'Chưa có' : `Upload Bill bổ sung · ${rng3.int(1,8)} giờ trước`
@@ -664,7 +747,11 @@ function deriveMissingCases(): MissingBillCase[] {
 
     const sessObj = sessionsV2.find(s => s.id === sid)
     const deadline = sessObj?.processingDeadline || subtractDays(date, -2)
-    const hoursRem = sessObj?.hoursRemaining || 0
+    // isLinhTonDong: the session-level hoursRemaining placeholder (35/5/0)
+    // doesn't reflect that THIS case's own deadline (2026-08-12) has already
+    // passed relative to TODAY (2026-08-13) — override with the real,
+    // already-negative value so deriveDisplayStatus can genuinely detect it.
+    const hoursRem = isLinhTonDong ? -24 : (sessObj?.hoursRemaining || 0)
     const t0 = `${fmtDisp(subtractDays(date, -1))} 10:24`
     const notifiedAt = `${fmtDisp(subtractDays(date, -1))} 10:25`
 

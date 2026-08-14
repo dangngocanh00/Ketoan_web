@@ -4,6 +4,8 @@ import {
   getTeamMemberRows, getTeamKpis, getTeamRecentActivity, sortTeamRows,
 } from '../../domain/csWorkload'
 import { useExplanationStore } from '../../domain/explanationStore'
+import { useFacebookUploadStore } from '../../domain/facebookUploadStore'
+import { composeLiveLookup } from '../../domain/liveWorkloadLookup'
 import { Badge, KpiCard, SectionHeader, TEAM_STATUS_META, formatHoursRemaining } from './shared'
 
 type FilterKind = 'missing' | 'pending' | 'urgent' | null
@@ -16,8 +18,13 @@ interface Props {
 export default function TeamDashboard({ members, onSelectMember }: Props) {
   const [filter, setFilter] = useState<FilterKind>(null)
   const { getLookup } = useExplanationStore()
+  const { getResolvedBankTxnIds, hasUploadedForSession } = useFacebookUploadStore()
+  const getLiveLookup = (csId: string) => composeLiveLookup(csId, getLookup(csId), getResolvedBankTxnIds, hasUploadedForSession)
 
-  const rows = useMemo(() => sortTeamRows(getTeamMemberRows(members, getLookup)), [members, getLookup])
+  const rows = useMemo(
+    () => sortTeamRows(getTeamMemberRows(members, getLiveLookup)),
+    [members, getLookup, getResolvedBankTxnIds, hasUploadedForSession],
+  )
   const kpis = useMemo(() => getTeamKpis(rows), [rows])
   const activity = useMemo(() => getTeamRecentActivity(members.map(m => m.name), 5), [members])
 

@@ -3,6 +3,9 @@ import { fmt, fmtDate } from '../../../data/sharedData'
 import { findCase, getTkqcGapsForCs, getUnresolvedBankRecords } from '../../../domain/bankBills'
 import { getCsSessionRows } from '../../../domain/csWorkload'
 import { useExplanationStore } from '../../../domain/explanationStore'
+import { useFacebookUploadStore } from '../../../domain/facebookUploadStore'
+import { useTkqcDeclarationStore } from '../../../domain/tkqcDeclarationStore'
+import { useCombinedLiveLookup } from '../../../domain/liveWorkloadLookup'
 import { EXPLANATION_REASON_LABEL, latestAttempt } from '../../../domain/explanationTypes'
 import type { ExplanationReason } from '../../../domain/explanationTypes'
 import type { EvidenceImage } from '../../../data/mock'
@@ -29,14 +32,26 @@ interface Props {
 export default function PersonalMissingBills({
   csId, csName, teamName, sessionId, sessionDate, readOnly, onNavigateUpload,
 }: Props) {
-  const { getLookup, isLockedForUpload, getCase } = useExplanationStore()
-  const live = useMemo(() => getLookup(csId), [getLookup, csId])
+  const { isLockedForUpload, getCase } = useExplanationStore()
+  const { getCompletedFbAmountForTkqc } = useFacebookUploadStore()
+  const { getResolvedTkqcIdsForCs } = useTkqcDeclarationStore()
+  const live = useCombinedLiveLookup(csId)
   const mbc = useMemo(() => findCase(csId, sessionId), [csId, sessionId])
   const unresolvedRecords = useMemo(
     () => getUnresolvedBankRecords(mbc, live.getResolvedIds(sessionId)),
     [mbc, live, sessionId],
   )
-  const tkqcGaps = useMemo(() => getTkqcGapsForCs(csId, sessionId), [csId, sessionId])
+  // §40 (Module 3): fold in FB Bills uploaded through Module 3 for a given
+  // TKQC/session — the gap reacts immediately after an upload, no hard
+  // refresh needed. §36-40 (TKQC Chạy Chung): the TKQC id list itself is
+  // this CS's own non-shared TKQC plus any Shared Card TKQC RESOLVED to
+  // them AT THIS SESSION'S OWN DATE (hardening §22) — never one they
+  // haven't been assigned at that date (Unassigned/Conflict never show up
+  // here), and never a different date's resolution.
+  const tkqcGaps = useMemo(() => {
+    const tkqcIds = getResolvedTkqcIdsForCs(csId, sessionDate)
+    return getTkqcGapsForCs(tkqcIds, sessionId, tkqcId => getCompletedFbAmountForTkqc(csId, sessionId, tkqcId))
+  }, [csId, sessionId, sessionDate, getResolvedTkqcIdsForCs, getCompletedFbAmountForTkqc])
   // §59: reuse the EXACT same row Module 1's Dashboard computes for this
   // session — KPI #4 "Trạng thái phiên" must never drift from the Dashboard.
   const dashboardRow = useMemo(() => getCsSessionRows(csId, csName, live).find(r => r.sessionId === sessionId), [csId, csName, live, sessionId])

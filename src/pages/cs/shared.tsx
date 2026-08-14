@@ -13,6 +13,7 @@ const TONE_STYLES: Record<BadgeTone, { bg: string; color: string }> = {
 }
 
 export const STATUS_META: Record<CsDisplayStatus, { label: string; tone: BadgeTone }> = {
+  ton_dong: { label: 'Còn tồn đọng', tone: 'error' },
   sap_het_han: { label: 'Sắp hết hạn', tone: 'error' },
   cho_duyet: { label: 'Chờ duyệt', tone: 'purple' },
   dang_xu_ly: { label: 'Đang xử lý', tone: 'info' },

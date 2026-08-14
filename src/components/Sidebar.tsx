@@ -51,6 +51,12 @@ const ICONS: Record<string, ReactNode> = {
       <path d="M3 11v1a1 1 0 001 1h8a1 1 0 001-1v-1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
     </svg>
   ),
+  'tkqc-shared': (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+      <rect x="1" y="2" width="11" height="7.5" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
+      <rect x="4" y="6.5" width="11" height="7.5" rx="1.5" fill="currentColor" opacity=".15" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  ),
   'audit-log': (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
       <path d="M4 4h8M4 7h8M4 10h5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
@@ -73,6 +79,7 @@ function navForAdmin(): { business: NavItem[]; system: NavItem[] } {
       { id: 'reports', label: 'Báo cáo', icon: ICONS.reports },
       { id: 'missing-bills', label: 'Bill thiếu', icon: ICONS['missing-bills'], badge: 8 },
       { id: 'upload', label: 'Tải lên dữ liệu', icon: ICONS.upload },
+      { id: 'tkqc-shared', label: 'TKQC Chạy Chung', icon: ICONS['tkqc-shared'] },
     ],
     system: [
       { id: 'audit-log', label: 'Audit Log', icon: ICONS['audit-log'] },
@@ -87,6 +94,7 @@ function navForCs(): { business: NavItem[]; system: NavItem[] } {
       { id: 'dashboard', label: 'Bảng điều hành', icon: ICONS.dashboard },
       { id: 'missing-bills', label: 'Bill thiếu', icon: ICONS['missing-bills'] },
       { id: 'upload', label: 'Tải lên Bill Facebook', icon: ICONS.upload },
+      { id: 'tkqc-shared', label: 'TKQC Chạy Chung', icon: ICONS['tkqc-shared'] },
     ],
     system: [
       { id: 'audit-log', label: 'Lịch sử', icon: ICONS['audit-log'] },

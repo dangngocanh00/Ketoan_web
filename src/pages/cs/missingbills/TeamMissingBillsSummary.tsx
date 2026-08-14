@@ -3,6 +3,8 @@ import { fmt } from '../../../data/sharedData'
 import { getCsRecentActivity, getCsSessionRows } from '../../../domain/csWorkload'
 import type { TeamMemberStatus } from '../../../domain/csWorkload'
 import { useExplanationStore } from '../../../domain/explanationStore'
+import { useFacebookUploadStore } from '../../../domain/facebookUploadStore'
+import { composeLiveLookup } from '../../../domain/liveWorkloadLookup'
 import { Badge, KpiCard, SectionHeader, TEAM_STATUS_META, formatHoursRemaining } from '../shared'
 
 type FilterKind = 'missing' | 'pending' | 'urgent' | null
@@ -25,7 +27,7 @@ interface SessionRow {
 }
 
 const STATUS_PRIORITY: Record<TeamMemberStatus, number> = {
-  sap_het_han: 0, cho_duyet: 1, dang_xu_ly: 2, chua_xu_ly: 3, hoan_tat: 4,
+  ton_dong: -1, sap_het_han: 0, cho_duyet: 1, dang_xu_ly: 2, chua_xu_ly: 3, hoan_tat: 4,
 }
 
 // §11-14/23: Team Summary — always paired with a "Phiên đối soát" selector
@@ -34,10 +36,11 @@ const STATUS_PRIORITY: Record<TeamMemberStatus, number> = {
 export default function TeamMissingBillsSummary({ members, sessionId, onSelectMember }: Props) {
   const [filter, setFilter] = useState<FilterKind>(null)
   const { getLookup } = useExplanationStore()
+  const { getResolvedBankTxnIds, hasUploadedForSession } = useFacebookUploadStore()
 
   const rows = useMemo<SessionRow[]>(() => {
     const built = members.map(m => {
-      const live = getLookup(m.id)
+      const live = composeLiveLookup(m.id, getLookup(m.id), getResolvedBankTxnIds, hasUploadedForSession)
       const row = getCsSessionRows(m.id, m.name, live).find(r => r.sessionId === sessionId)
       if (!row) {
         const recent = getCsRecentActivity(m.name, 1)[0]
@@ -61,7 +64,7 @@ export default function TeamMissingBillsSummary({ members, sessionId, onSelectMe
       const ha = a.hoursRemaining ?? Infinity, hb = b.hoursRemaining ?? Infinity
       return ha - hb
     })
-  }, [members, sessionId, getLookup])
+  }, [members, sessionId, getLookup, getResolvedBankTxnIds, hasUploadedForSession])
 
   const kpis = useMemo(() => {
     const withMissing = rows.filter(r => r.missingBills > 0)

@@ -4,6 +4,8 @@
  * directly — that keeps role rules in one place as the CS/Leader UI grows.
  */
 import { teamById, userById } from '../data/sharedData'
+import { resolveTkqcId } from '../domain/sharedCardOwnership'
+import { seedDeclarations } from '../domain/tkqcDeclarationStore'
 import type { Page } from '../navigation'
 import type { CurrentUser, Role } from './types'
 
@@ -27,8 +29,8 @@ export function usesCsUI(role: Role): boolean {
 
 // ── Route access ─────────────────────────────────────────────────────────────
 
-const ADMIN_PAGES: Page[] = ['dashboard', 'sessions', 'reports', 'missing-bills', 'upload', 'audit-log', 'settings']
-const CS_PAGES: Page[] = ['dashboard', 'missing-bills', 'upload', 'audit-log']
+const ADMIN_PAGES: Page[] = ['dashboard', 'sessions', 'reports', 'missing-bills', 'upload', 'tkqc-shared', 'audit-log', 'settings']
+const CS_PAGES: Page[] = ['dashboard', 'missing-bills', 'upload', 'tkqc-shared', 'audit-log']
 
 export function accessiblePages(role: Role): Page[] {
   return usesAdminUI(role) ? ADMIN_PAGES : CS_PAGES
@@ -111,10 +113,28 @@ export function canViewAdminReports(user: CurrentUser): boolean {
 // So today, resolving ownership just means: read `record.cs` directly, never
 // re-derive it from a live "current owner of this TKQC" map.
 //
-// TODO(real ownership history): once AEZCheck exposes a TKQC → CS assignment
-// history table (tkqcId, fromDate, toDate, csId), wire it in here and keep
-// this same signature so callers (which already just read `record.cs`)
-// don't need to change.
-export function resolveTkqcOwnerAt(_tkqcId: string, _sessionDate: string): string | null {
-  return null
+// TKQC Chạy Chung (task): for a Shared Card's TKQC, ownership now resolves
+// from real CS declarations instead of always returning null. For a
+// non-shared TKQC, `resolveTkqcId` returns null (no matching Shared Card)
+// and callers fall back to the existing single-owner path unchanged.
+//
+// Uses `seedDeclarations()` — the STATIC seed, not the live
+// tkqcDeclarationStore Context — so this stays a plain, non-hook function
+// callable from sessionHistory.ts's frozen closure-snapshot build (task
+// §7/44/45: History must never read live ownership).
+//
+// HARDENING: `sessionDate` is now genuinely used — declarations are
+// effective INTERVALS (see sharedCardOwnership.ts's `isEffectiveAt`), so
+// resolving TKQC A at "2026-07-15" and at "2026-08-14" can legitimately
+// return two different CS if ownership changed hands in between. There is
+// no "use current declaration" fallback anywhere in this path.
+//
+// ASSUMPTIONS (task §35, unchanged): TKQC ids are globally unique across
+// the shared dataset, so no extra cardLast4/context key is needed to
+// disambiguate. Also (hardening task §5): Shared Card ELIGIBILITY itself
+// (which CS/TKQC belong to a card) is NOT versioned — only declarations
+// are — so resolving a past date still consults today's Sheet eligibility
+// list. Documented limitation, not fabricated further.
+export function resolveTkqcOwnerAt(tkqcId: string, sessionDate: string): string | null {
+  return resolveTkqcId(tkqcId, seedDeclarations(), sessionDate)?.resolvedOwnerCsId ?? null
 }

@@ -4,17 +4,21 @@ import Dashboard from './pages/Dashboard'
 import Sessions from './pages/Sessions'
 import MissingBills from './pages/MissingBills'
 import Upload from './pages/Upload'
+import TkqcSharedCard from './pages/TkqcSharedCard'
 import AuditLog from './pages/AuditLog'
 import Reports from './pages/Reports'
 import LoginPage from './pages/LoginPage'
 import CsDashboard from './pages/cs/CsDashboard'
 import CsMissingBills from './pages/cs/CsMissingBills'
 import CsUpload from './pages/cs/CsUpload'
+import CsTkqcShared from './pages/cs/CsTkqcShared'
 import CsHistory from './pages/cs/CsHistory'
 import { AuthProvider, useAuth } from './auth/AuthContext'
 import { canAccessPage, defaultPageFor, usesAdminUI } from './auth/permissions'
 import { CsScopeProvider } from './domain/csScope'
 import { ExplanationStoreProvider } from './domain/explanationStore'
+import { FacebookUploadStoreProvider } from './domain/facebookUploadStore'
+import { TkqcDeclarationStoreProvider } from './domain/tkqcDeclarationStore'
 import type { Page } from './navigation'
 
 export type { Page }
@@ -45,6 +49,7 @@ function AuthenticatedApp() {
             {activePage === 'sessions' && <Sessions onGoMissingBills={() => navigate('missing-bills')} />}
             {activePage === 'missing-bills' && <MissingBills />}
             {activePage === 'upload' && <Upload />}
+            {activePage === 'tkqc-shared' && <TkqcSharedCard />}
             {activePage === 'audit-log' && <AuditLog />}
             {activePage === 'reports' && <Reports onGoSession={() => navigate('sessions')} />}
             {activePage === 'settings' && (
@@ -56,10 +61,13 @@ function AuthenticatedApp() {
           </>
         ) : (
           <CsScopeProvider>
-            {activePage === 'dashboard' && <CsDashboard onNavigateMissingBills={() => navigate('missing-bills')} />}
-            {activePage === 'missing-bills' && <CsMissingBills onNavigateUpload={() => navigate('upload')} />}
-            {activePage === 'upload' && <CsUpload />}
-            {activePage === 'audit-log' && <CsHistory />}
+            <FacebookUploadStoreProvider>
+              {activePage === 'dashboard' && <CsDashboard onNavigateMissingBills={() => navigate('missing-bills')} />}
+              {activePage === 'missing-bills' && <CsMissingBills onNavigateUpload={() => navigate('upload')} />}
+              {activePage === 'upload' && <CsUpload onNavigateMissingBills={() => navigate('missing-bills')} />}
+              {activePage === 'tkqc-shared' && <CsTkqcShared />}
+              {activePage === 'audit-log' && <CsHistory />}
+            </FacebookUploadStoreProvider>
           </CsScopeProvider>
         )}
       </main>
@@ -80,9 +88,16 @@ export default function App() {
           the same browser tab — CS submits, logs out, Admin logs in and
           sees the SAME case (task: "cross-role explanation — bắt buộc
           shared"). It resets on a real page reload since there is no
-          backend/persistence layer in this prototype — see report. */}
+          backend/persistence layer in this prototype — see report.
+          TkqcDeclarationStoreProvider is mounted at this SAME root level
+          for the identical reason: "TKQC Chạy Chung" is one shared domain
+          across CS/Leader/Accountant/Admin (task §0) — a CS's declaration
+          must be visible to Accountant/Admin's master view without a
+          reload, exactly like the explanation store already is. */}
       <ExplanationStoreProvider>
-        <Gate />
+        <TkqcDeclarationStoreProvider>
+          <Gate />
+        </TkqcDeclarationStoreProvider>
       </ExplanationStoreProvider>
     </AuthProvider>
   )

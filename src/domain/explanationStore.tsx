@@ -30,7 +30,11 @@ function resolveLegacyBillIds(raw: ExplanationCase): string[] {
     .filter((id): id is string => !!id)
 }
 
-function seedCases(): ExplanationCaseV2[] {
+// Exported for sessionHistory.ts (Module 4) — a second, independent call
+// reads the SAME static seed data and produces a structurally-identical
+// array; pure/deterministic, so this never needs to share state with the
+// live Context's `cases`.
+export function seedCases(): ExplanationCaseV2[] {
   const dateToSessionId = Object.fromEntries(sessionsV2.map(s => [s.date, s.id]))
   const cases: ExplanationCaseV2[] = []
   for (const raw of allExplanationCasesRaw) {

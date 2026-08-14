@@ -3,9 +3,13 @@ import { useAuth } from '../../auth/AuthContext'
 import { teamScopeCsUsers } from '../../auth/permissions'
 import { useCsScope, resolveScopeTarget } from '../../domain/csScope'
 import { listActiveSessions, listOpenSessionsForCs } from '../../domain/bankBills'
+import { getCsSessionRows } from '../../domain/csWorkload'
+import type { CsDisplayStatus } from '../../domain/csWorkload'
+import { useCombinedLiveLookup } from '../../domain/liveWorkloadLookup'
 import { fmtDate, teamById } from '../../data/sharedData'
 import PersonalMissingBills from './missingbills/PersonalMissingBills'
 import TeamMissingBillsSummary from './missingbills/TeamMissingBillsSummary'
+import { STATUS_META } from './shared'
 
 interface Props {
   onNavigateUpload: () => void
@@ -40,6 +44,20 @@ export default function CsMissingBills({ onNavigateUpload }: Props) {
     () => (scope.kind === 'team' ? listActiveSessions() : targetCsId ? listOpenSessionsForCs(targetCsId) : []),
     [scope.kind, targetCsId],
   )
+
+  // §51/58: the selector must show the REAL display status next to each
+  // session (never just the date) — this is what makes "Còn tồn đọng"
+  // sessions visibly distinct from "Đang xử lý"/"Sắp hết hạn" ones, on top
+  // of them already being structurally included (OPEN_STATUSES was never
+  // deadline-based to begin with — see sessionLifecycle.ts). Only
+  // meaningful for a single CS (self/member); Team scope has no one CS to
+  // compute a status for.
+  const live = useCombinedLiveLookup(targetCsId)
+  const sessionStatusById = useMemo(() => {
+    if (scope.kind === 'team' || !target) return new Map<string, CsDisplayStatus>()
+    const rows = getCsSessionRows(target.csId, target.displayName, live)
+    return new Map(rows.map(r => [r.sessionId, r.status]))
+  }, [scope.kind, target, live])
 
   // Only clear the current session pick when it's genuinely NOT selectable
   // in the new option set — never a blanket reset on every scope change.
@@ -130,9 +148,15 @@ export default function CsMissingBills({ onNavigateUpload }: Props) {
                 Phiên đối soát
               </label>
               <select className="select-input" value={sessionId ?? ''} onChange={e => setManualSessionId(e.target.value)}>
-                {sessionOptions.map(s => (
-                  <option key={s.sessionId} value={s.sessionId}>{fmtDate(s.sessionDate)}</option>
-                ))}
+                {sessionOptions.map(s => {
+                  const status = sessionStatusById.get(s.sessionId)
+                  const statusLabel = status ? STATUS_META[status].label : 'Đã xử lý hết'
+                  return (
+                    <option key={s.sessionId} value={s.sessionId}>
+                      {fmtDate(s.sessionDate)}{scope.kind !== 'team' ? ` — ${statusLabel}` : ''}
+                    </option>
+                  )
+                })}
               </select>
             </div>
           )}
@@ -155,7 +179,7 @@ export default function CsMissingBills({ onNavigateUpload }: Props) {
 
       {focusExpired && (
         <div style={{ background: '#FFFAEB', border: '1px solid #FEDF89', color: '#B54708', borderRadius: 8, padding: '8px 14px', fontSize: 12.5, marginBottom: 16 }}>
-          Phiên được mở từ Bảng điều hành không còn active — đang hiển thị phiên active gần nhất thay thế. Xem phiên đã đóng ở Module Lịch sử (đang phát triển).
+          Phiên được mở từ Bảng điều hành không còn active — đang hiển thị phiên active gần nhất thay thế. Xem phiên đã đóng ở Lịch sử.
         </div>
       )}
 
