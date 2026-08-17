@@ -2,6 +2,8 @@ import { createContext, useCallback, useContext, useMemo, useState } from 'react
 import type { ReactNode } from 'react'
 import { allExplanationCasesRaw, missingBillRecords, sessionsV2, sharedUsers, teamById } from '../data/sharedData'
 import { findCase, getUnresolvedBankRecords } from './bankBills'
+import { isSessionClosed } from './sessionLifecycle'
+import { useFacebookUploadStore } from './facebookUploadStore'
 import type { EvidenceImage, ExplanationCase } from '../data/mock'
 import type { ExplanationAttempt, ExplanationCaseV2, ExplanationReason } from './explanationTypes'
 
@@ -118,6 +120,13 @@ const ExplanationStoreContext = createContext<ExplanationStoreValue | null>(null
 // to Module 1's Dashboard without a page reload.
 export function ExplanationStoreProvider({ children }: { children: ReactNode }) {
   const [cases, setCases] = useState<ExplanationCaseV2[]>(seedCases)
+  // Reopen task §32: explanation is reused AS-IS for Reopen's unresolved
+  // Reopen Bank Bills — no separate explanation type. Needs read access to
+  // the live Bank↔FB reconciliation state (which owns Reopen Bank Bills —
+  // see facebookUploadStore.tsx's header) to (a) know a session currently
+  // Reopened is NOT actually closed for explanation purposes, and (b) fold
+  // Reopen Bank Bills into the "still unresolved" computation below.
+  const fb = useFacebookUploadStore()
 
   const getCase = useCallback(
     (csId: string, sessionId: string) => cases.find(c => c.csId === csId && c.sessionId === sessionId),
@@ -149,7 +158,11 @@ export function ExplanationStoreProvider({ children }: { children: ReactNode }) 
         return { ok: false, error: 'Đã có giải trình đang chờ duyệt cho phiên này.' }
       }
       const session = sessionsV2.find(s => s.id === input.sessionId)
-      if (session && (session.status === 'closed' || session.status === 'closed_pending')) {
+      // A session Reopened right now is NOT closed for this purpose, even
+      // though its underlying static `session.status` is still literally
+      // 'closed'/'closed_pending' — see sessionLifecycle.ts's
+      // `isSessionOperational` comment.
+      if (session && isSessionClosed(session.status) && !fb.isSessionReopened(input.sessionId)) {
         return { ok: false, error: 'Phiên đã đóng. Không thể gửi giải trình mới.' }
       }
       if (input.reasons.length === 0) return { ok: false, error: 'Vui lòng chọn ít nhất 1 lý do.' }
@@ -165,8 +178,14 @@ export function ExplanationStoreProvider({ children }: { children: ReactNode }) 
         : new Set<string>()
       // Always recompute fresh at the moment of submit — the store can never
       // submit a stale snapshot even if the UI's own revalidation (§37) were
-      // somehow skipped.
-      const unresolved = getUnresolvedBankRecords(mbc, acceptedIds)
+      // somehow skipped. Reopen task §27/32: also fold in any Reopen Bank
+      // Bills for this CS+session not yet matched via Facebook upload —
+      // the SAME explanation flow, never a separate Reopen-specific one.
+      const reopenResolvedIds = fb.getResolvedBankTxnIds(input.csId, input.sessionId)
+      const reopenUnresolved = fb.getReopenBankBillsForCs(input.csId, input.sessionId).filter(
+        r => !acceptedIds.has(r.txnId) && !reopenResolvedIds.has(r.txnId),
+      )
+      const unresolved = [...getUnresolvedBankRecords(mbc, acceptedIds), ...reopenUnresolved]
       if (unresolved.length === 0) {
         return { ok: false, error: 'Không còn Bank Bill nào chưa đối soát để giải trình.' }
       }
@@ -206,7 +225,7 @@ export function ExplanationStoreProvider({ children }: { children: ReactNode }) 
       })
       return { ok: true }
     },
-    [cases],
+    [cases, fb],
   )
 
   const review = useCallback(

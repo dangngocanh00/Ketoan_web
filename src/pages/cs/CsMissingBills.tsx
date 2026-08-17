@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useAuth } from '../../auth/AuthContext'
 import { teamScopeCsUsers } from '../../auth/permissions'
+import { useAccountStore } from '../../domain/accountStore'
 import { useCsScope, resolveScopeTarget } from '../../domain/csScope'
 import { listActiveSessions, listOpenSessionsForCs } from '../../domain/bankBills'
 import { getCsSessionRows } from '../../domain/csWorkload'
 import type { CsDisplayStatus } from '../../domain/csWorkload'
 import { useCombinedLiveLookup } from '../../domain/liveWorkloadLookup'
-import { fmtDate, teamById } from '../../data/sharedData'
+import { useReopenStore } from '../../domain/reopenStore'
+import { fmtDate } from '../../data/sharedData'
 import PersonalMissingBills from './missingbills/PersonalMissingBills'
 import TeamMissingBillsSummary from './missingbills/TeamMissingBillsSummary'
 import { STATUS_META } from './shared'
@@ -28,22 +30,36 @@ export default function CsMissingBills({ onNavigateUpload }: Props) {
     drillDownOrigin, beginTeamDrillDown, clearDrillDownOrigin,
   } = useCsScope()
   const [manualSessionId, setManualSessionId] = useState<string | null>(null)
+  const { accounts, teams } = useAccountStore()
 
   const isLeader = currentUser?.role === 'LEADER'
-  const allTeamMembers = isLeader && currentUser ? teamScopeCsUsers(currentUser) : []
+  // Resolved from the LIVE Account store (Cài đặt Finalize §11) — see
+  // permissions.ts's `teamScopeCsUsers` comment for why this can't use the
+  // static sharedTeams seed or the cached currentUser.teamId.
+  const allTeamMembers = isLeader && currentUser ? teamScopeCsUsers(currentUser, accounts) : []
   const memberOptions = currentUser ? allTeamMembers.filter(u => u.id !== currentUser.id) : []
 
-  const target = currentUser && scope.kind !== 'team' ? resolveScopeTarget(currentUser, scope) : null
+  // Live team name for display (§11) — resolved from the Account store's own
+  // current `teamId`, never the static seed.
+  const liveOwnTeamId = currentUser ? accounts.find(a => a.userId === currentUser.id)?.teamId ?? null : null
+  const liveTeamName = liveOwnTeamId ? (teams.find(t => t.teamId === liveOwnTeamId)?.teamName ?? '') : ''
+
+  const target = currentUser && scope.kind !== 'team' ? resolveScopeTarget(currentUser, scope, accounts) : null
   const targetCsId = target?.csId ?? ''
 
   // §11/17: Team scope has no single CS, so its session list is every
   // currently-open session system-wide; Personal/member scope stays scoped
   // to sessions that CS actually has a case in — same rule as before, just
   // now ALSO available (not hidden) when scope = Toàn Team.
-  const sessionOptions = useMemo(
-    () => (scope.kind === 'team' ? listActiveSessions() : targetCsId ? listOpenSessionsForCs(targetCsId) : []),
-    [scope.kind, targetCsId],
-  )
+  // Reopen task §24/29: Reopened sessions are folded in as an EQUALLY valid
+  // operational session — never a second selector, never a separate page.
+  const reopenStore = useReopenStore()
+  const sessionOptions = useMemo(() => {
+    const base = scope.kind === 'team' ? listActiveSessions() : targetCsId ? listOpenSessionsForCs(targetCsId) : []
+    const reopened = scope.kind === 'team' ? reopenStore.getAllReopenedSessions() : targetCsId ? reopenStore.getReopenSessionsForCs(targetCsId) : []
+    const seen = new Set(base.map(s => s.sessionId))
+    return [...base, ...reopened.filter(s => !seen.has(s.sessionId))]
+  }, [scope.kind, targetCsId, reopenStore])
 
   // §51/58: the selector must show the REAL display status next to each
   // session (never just the date) — this is what makes "Còn tồn đọng"
@@ -149,11 +165,12 @@ export default function CsMissingBills({ onNavigateUpload }: Props) {
               </label>
               <select className="select-input" value={sessionId ?? ''} onChange={e => setManualSessionId(e.target.value)}>
                 {sessionOptions.map(s => {
+                  const isReopened = reopenStore.isSessionReopened(s.sessionId)
                   const status = sessionStatusById.get(s.sessionId)
-                  const statusLabel = status ? STATUS_META[status].label : 'Đã xử lý hết'
+                  const statusLabel = isReopened ? 'Đã mở lại' : status ? STATUS_META[status].label : 'Đã xử lý hết'
                   return (
                     <option key={s.sessionId} value={s.sessionId}>
-                      {fmtDate(s.sessionDate)}{scope.kind !== 'team' ? ` — ${statusLabel}` : ''}
+                      {fmtDate(s.sessionDate)}{scope.kind !== 'team' ? ` — ${statusLabel}` : isReopened ? ' — Đã mở lại' : ''}
                     </option>
                   )
                 })}
@@ -199,7 +216,7 @@ export default function CsMissingBills({ onNavigateUpload }: Props) {
         <PersonalMissingBills
           csId={target.csId}
           csName={target.displayName}
-          teamName={(currentUser.teamId && teamById[currentUser.teamId]?.team_name) || ''}
+          teamName={liveTeamName}
           sessionId={sessionId}
           sessionDate={sessionOptions.find(s => s.sessionId === sessionId)?.sessionDate ?? ''}
           readOnly={target.readOnly}

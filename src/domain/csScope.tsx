@@ -1,7 +1,10 @@
-import { createContext, useContext, useMemo, useState } from 'react'
+import { createContext, useContext, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { userById } from '../data/sharedData'
-import { canActOnCsRecord } from '../auth/permissions'
+import { canActOnCsRecord, teamScopeCsUsers } from '../auth/permissions'
+import type { LiveAccountRef } from '../auth/permissions'
+import { useAuth } from '../auth/AuthContext'
+import { useAccountStore } from './accountStore'
 import type { CurrentUser } from '../auth/types'
 
 export type CsScope =
@@ -54,6 +57,23 @@ export function CsScopeProvider({ children }: { children: ReactNode }) {
   const [uploadFocusSessionId, setUploadFocusSessionId] = useState<string | null>(null)
   const [drillDownOrigin, setDrillDownOrigin] = useState<TeamDrillDownOrigin | null>(null)
 
+  // Cài đặt Finalize (2nd pass) §17/19: a Leader's 'member' scope must
+  // revalidate against the LIVE current team the instant an Admin moves that
+  // CS to a different team — never keep pointing at someone who just left
+  // (task's "Leader chọn CS A → Admin chuyển A → selection tự reset" test).
+  // Runs here (not per-page) so it covers CsDashboard AND CsMissingBills —
+  // the two pages that share this exact scope state (task §23's original
+  // "scope survives switching pages" contract, still honored: this only
+  // resets when the selection has actually gone invalid, never on a plain
+  // page switch).
+  const { currentUser } = useAuth()
+  const { accounts } = useAccountStore()
+  useEffect(() => {
+    if (!currentUser || scope.kind !== 'member') return
+    const stillValid = teamScopeCsUsers(currentUser, accounts).some(m => m.id === scope.csId)
+    if (!stillValid) setScope({ kind: 'self' })
+  }, [currentUser, accounts, scope])
+
   const value = useMemo<CsScopeContextValue>(
     () => ({
       scope,
@@ -82,8 +102,16 @@ export function useCsScope(): CsScopeContextValue {
 // reuses the exact same ownership rule as the rest of the app ("của ai người
 // đó xử lý", permissions.canActOnCsRecord) instead of a second boolean that
 // could drift out of sync: a Leader viewing anyone but themself is read-only.
-export function resolveScopeTarget(currentUser: CurrentUser, scope: CsScope) {
-  const targetUser = scope.kind === 'member' ? userById[scope.csId] : null
+//
+// §18 (Cài đặt Finalize, 2nd pass): this is the DOMAIN-layer enforcement, not
+// just a UI convenience — `liveAccounts` is checked here independently of
+// whatever `scope` state happens to be in memory, so a stale/tampered
+// `scope.csId` (e.g. left over from before a Team reassignment) can never
+// resolve to that CS's data; it silently falls back to the caller's own
+// record instead, exactly like `scope.kind === 'self'` would.
+export function resolveScopeTarget(currentUser: CurrentUser, scope: CsScope, liveAccounts: LiveAccountRef[]) {
+  const validMemberIds = new Set(teamScopeCsUsers(currentUser, liveAccounts).map(m => m.id))
+  const targetUser = scope.kind === 'member' && validMemberIds.has(scope.csId) ? userById[scope.csId] : null
   const displayName = targetUser ? targetUser.full_name : currentUser.displayName
   const csId = targetUser ? targetUser.user_id : currentUser.id
   const readOnly = !canActOnCsRecord(currentUser, displayName)

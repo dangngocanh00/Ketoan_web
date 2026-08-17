@@ -3,7 +3,6 @@
  * instead of checking `currentUser.role === '...'` (or, worse, username)
  * directly — that keeps role rules in one place as the CS/Leader UI grows.
  */
-import { teamById, userById } from '../data/sharedData'
 import { resolveTkqcId } from '../domain/sharedCardOwnership'
 import { seedDeclarations } from '../domain/tkqcDeclarationStore'
 import type { Page } from '../navigation'
@@ -46,37 +45,51 @@ export function defaultPageFor(_role: Role): Page {
 
 // ── Data scope (CS / Leader) ─────────────────────────────────────────────────
 
-// Every CS (incl. the Leader, who is also a CS) inside a Leader's team, used
-// to bound what a Leader may view. Only ever pulls from the Leader's own
-// teamId — never from a route parameter — so a Leader can't be pointed at
-// another team's data.
-export function teamScopeCsUsers(user: CurrentUser): { id: string; name: string }[] {
-  if (!user.teamId) return []
-  const team = teamById[user.teamId]
-  if (!team) return []
-  const memberIds = team.member_user_ids.includes(user.id)
-    ? team.member_user_ids
-    : [user.id, ...team.member_user_ids]
-  return memberIds
-    .map(id => userById[id])
-    .filter((u): u is NonNullable<typeof u> => !!u)
-    .map(u => ({ id: u.user_id, name: u.full_name }))
+// Minimal structural shape these helpers need from an Account record — kept
+// separate from `domain/accountStore.tsx`'s full `ManagedAccount` (auth/ has
+// no business needing the rest of it) so `useAccountStore().accounts` just
+// structurally satisfies this without any conversion at call sites.
+export interface LiveAccountRef {
+  userId: string
+  teamId: string | null
+  fullName: string
 }
 
-export function teamScopeCsNames(user: CurrentUser): string[] {
-  return teamScopeCsUsers(user).map(u => u.name)
+// Every CS (incl. the Leader, who is also a CS) CURRENTLY on the Leader's
+// team, used to bound what a Leader may view. Cài đặt Finalize task §11:
+// team membership is now resolved ENTIRELY from the live Account store's own
+// `teamId` column (the same "Team" column an Admin edits in Settings → Tài
+// khoản) — never from the static `sharedTeams` seed, and never from
+// `user.teamId` on the cached `CurrentUser` session object either, since
+// that field is only refreshed at login (see AuthContext.tsx) and would go
+// stale the moment an Admin moves a CS to a different team while that CS/
+// Leader is already logged in. Resolving the Leader's OWN current team id
+// fresh from `liveAccounts` (by their own userId) is what makes a Team
+// reassignment take effect immediately, with no re-login required.
+export function teamScopeCsUsers(user: CurrentUser, liveAccounts: LiveAccountRef[]): { id: string; name: string }[] {
+  const ownAccount = liveAccounts.find(a => a.userId === user.id)
+  const currentTeamId = ownAccount?.teamId ?? user.teamId
+  if (!currentTeamId) return []
+  const map = new Map<string, string>()
+  for (const a of liveAccounts) if (a.teamId === currentTeamId) map.set(a.userId, a.fullName)
+  map.set(user.id, ownAccount?.fullName ?? user.displayName) // Leader always sees themself regardless
+  return [...map.entries()].map(([id, name]) => ({ id, name }))
+}
+
+export function teamScopeCsNames(user: CurrentUser, liveAccounts: LiveAccountRef[]): string[] {
+  return teamScopeCsUsers(user, liveAccounts).map(u => u.name)
 }
 
 // Names of CS this user is allowed to VIEW records for. 'all' = no restriction
 // (Admin/Accountant). Leader = self + team. CS = self only.
-export function visibleCsNames(user: CurrentUser): string[] | 'all' {
+export function visibleCsNames(user: CurrentUser, liveAccounts: LiveAccountRef[]): string[] | 'all' {
   if (usesAdminUI(user.role)) return 'all'
-  if (user.role === 'LEADER') return teamScopeCsNames(user)
+  if (user.role === 'LEADER') return teamScopeCsNames(user, liveAccounts)
   return [user.displayName]
 }
 
-export function canViewCsRecord(user: CurrentUser, recordCsName: string): boolean {
-  const scope = visibleCsNames(user)
+export function canViewCsRecord(user: CurrentUser, recordCsName: string, liveAccounts: LiveAccountRef[]): boolean {
+  const scope = visibleCsNames(user, liveAccounts)
   return scope === 'all' || scope.includes(recordCsName)
 }
 
@@ -98,6 +111,31 @@ export function canApproveExplanation(user: CurrentUser): boolean {
 
 export function canViewAdminReports(user: CurrentUser): boolean {
   return usesAdminUI(user.role)
+}
+
+// ── Cài đặt (Settings) — task §1/14/43 ───────────────────────────────────────
+// LEADER/CS get NEITHER the Settings page (already excluded via CS_PAGES
+// above) NOR any of the domain actions below — checked here again so a
+// component can never reach a Settings action just because it happens to be
+// reachable from an Admin/Accountant-only screen.
+
+// Whether this role sees the (read-only) Tài khoản directory tab at all —
+// there is no "manage" left to gate (task Finalize, 3rd pass: identity/
+// role/status/Team are all AezCheck-owned, read-only everywhere in this app).
+export function canViewAccountsDirectory(role: Role): boolean {
+  return role === 'ADMIN'
+}
+
+export function canEditToleranceSettings(role: Role): boolean {
+  return role === 'ADMIN' || role === 'ACCOUNTANT'
+}
+
+// Mở lại phiên / Bổ sung Bill Bank / Đóng lại phiên (Reopen task §3): Admin +
+// Kế toán only, never Leader/CS. Enforced again at the domain layer itself
+// (see reopenStore.tsx's `authorizeReopenActor`) — this UI-level helper is
+// never the only gate.
+export function canManageReopen(role: Role): boolean {
+  return role === 'ADMIN' || role === 'ACCOUNTANT'
 }
 
 // ── Ownership resolution (session-date based, not "current owner") ──────────

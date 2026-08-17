@@ -6,6 +6,12 @@ import type {
   SessionV2, SessionStatusV2, ReconciledPair,
   ExceptionRecord, BankUnreconciledRecord, FbUnreconciledRecord,
 } from '../data/mock'
+import { useAuth } from '../auth/AuthContext'
+import { canManageReopen } from '../auth/permissions'
+import { useReopenStore, listClosedSessionsInMonth } from '../domain/reopenStore'
+import { useFacebookUploadStore } from '../domain/facebookUploadStore'
+import { parseBankCsvFile, parseBankXlsxFile, isExcelFileName } from '../domain/bankSupplementParser'
+import type { EffectiveSessionStatus } from '../domain/reopenTypes'
 
 // ─── Shared Badge ─────────────────────────────────────────────────────────────
 
@@ -26,12 +32,15 @@ function Badge({ type, children }: { type: string; children: React.ReactNode }) 
   return <span className="badge" style={{ background: s.bg, color: s.color }}>{children}</span>
 }
 
-function statusBadge(status: SessionStatusV2) {
-  const map: Record<SessionStatusV2, { type: string; label: string }> = {
+function statusBadge(status: EffectiveSessionStatus) {
+  const map: Record<EffectiveSessionStatus, { type: string; label: string }> = {
     active: { type: 'active', label: 'Đang đối soát' },
     closing_soon: { type: 'closing_soon', label: 'Sắp đóng' },
     closed: { type: 'closed', label: 'Đã đóng' },
     closed_pending: { type: 'closed_pending', label: 'Đã đóng còn tồn đọng' },
+    // Reopen task §2/25: a THIRD, distinct badge — never confused with
+    // "closed_pending" (which is a first-close outcome, not a reopen state).
+    reopened: { type: 'purple', label: 'Đã mở lại' },
   }
   const { type, label } = map[status]
   return <Badge type={type}>{label}</Badge>
@@ -258,15 +267,157 @@ function RecordDrawer({ record, onClose, onGoMissingBills }: {
   )
 }
 
+// ─── Reopen modal ───────────────────────────────────────────────────────────
+
+function availableMonths(): string[] {
+  const set = new Set(sessionsV2.map(s => s.date.slice(0, 7)))
+  return [...set].sort((a, b) => b.localeCompare(a))
+}
+
+function monthLabel(m: string): string {
+  const [y, mm] = m.split('-')
+  return `Tháng ${mm}/${y}`
+}
+
+function ReopenModal({ onClose, onReopened }: { onClose: () => void; onReopened: (sessionId: string) => void }) {
+  const { currentUser } = useAuth()
+  const reopenStore = useReopenStore()
+  const months = useMemo(() => availableMonths(), [])
+  const [month, setMonth] = useState(months[0] ?? '')
+  const [sessionId, setSessionId] = useState('')
+  const [deadline, setDeadline] = useState('')
+  const [reason, setReason] = useState('')
+  const [error, setError] = useState<string | null>(null)
+
+  const openSessionIds = new Set(reopenStore.cycles.filter(c => c.status === 'OPEN').map(c => c.sessionId))
+  const eligible = useMemo(() => (month ? listClosedSessionsInMonth(month, openSessionIds) : []), [month, reopenStore.cycles])
+
+  function handleMonthChange(next: string) {
+    setMonth(next)
+    setSessionId('')
+  }
+
+  function submit() {
+    if (!sessionId) { setError('Vui lòng chọn phiên cần mở lại.'); return }
+    const result = reopenStore.reopenSession({
+      sessionId, deadline, reason,
+      actor: { id: currentUser!.id, name: currentUser!.displayName, role: currentUser!.role },
+    })
+    if (!result.ok) { setError(result.error); return }
+    onReopened(sessionId)
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-panel" style={{ width: 440 }} onClick={e => e.stopPropagation()}>
+        <div style={{ padding: '16px 20px', borderBottom: '1px solid #E4E7EC', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#182230' }}>MỞ LẠI PHIÊN</div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#667085', fontSize: 18, lineHeight: 1 }}>×</button>
+        </div>
+        <div style={{ padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: '#344054', display: 'block', marginBottom: 5 }}>Tháng nghiệp vụ *</label>
+            <select className="select-input" style={{ width: '100%' }} value={month} onChange={e => handleMonthChange(e.target.value)}>
+              {months.map(m => <option key={m} value={m}>{monthLabel(m)}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: '#344054', display: 'block', marginBottom: 5 }}>Phiên cần mở lại *</label>
+            {eligible.length === 0 ? (
+              <div style={{ fontSize: 12, color: '#98A2B3' }}>Không có phiên đã đóng nào trong tháng này có thể mở lại.</div>
+            ) : (
+              <select className="select-input" style={{ width: '100%' }} value={sessionId} onChange={e => setSessionId(e.target.value)}>
+                <option value="">— Chọn phiên —</option>
+                {eligible.map((s, i) => <option key={s.id} value={s.id}>{fmtDate(s.date)} — Phiên {i + 1}</option>)}
+              </select>
+            )}
+          </div>
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: '#344054', display: 'block', marginBottom: 5 }}>Hạn xử lý *</label>
+            <input type="datetime-local" className="text-input" style={{ width: '100%' }} value={deadline} onChange={e => setDeadline(e.target.value)} />
+          </div>
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: '#344054', display: 'block', marginBottom: 5 }}>Lý do mở lại *</label>
+            <textarea
+              className="text-input" style={{ width: '100%', height: 70, paddingTop: 8, resize: 'vertical', fontFamily: 'inherit' }}
+              value={reason} onChange={e => setReason(e.target.value)}
+              placeholder="Ví dụ: Phát hiện thiếu Bill Bank khi rà soát lại ngày 10/08/2026."
+            />
+          </div>
+          {error && <div style={{ fontSize: 12, color: '#B42318' }}>{error}</div>}
+        </div>
+        <div style={{ padding: '14px 20px', borderTop: '1px solid #E4E7EC', display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <button className="btn-secondary" onClick={onClose}>Huỷ</button>
+          <button className="btn-primary" onClick={submit}>Mở lại phiên</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Close Gate modal ───────────────────────────────────────────────────────
+
+function CloseSessionModal({ session, onClose, onClosed }: { session: SessionV2; onClose: () => void; onClosed: () => void }) {
+  const { currentUser } = useAuth()
+  const reopenStore = useReopenStore()
+  const [error, setError] = useState<string | null>(null)
+  const gate = reopenStore.getCloseGateSummary(session.id)
+
+  function submit() {
+    const result = reopenStore.recloseSession({ sessionId: session.id, actor: { id: currentUser!.id, name: currentUser!.displayName, role: currentUser!.role } })
+    if (!result.ok) { setError(result.error); return }
+    onClosed()
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-panel" style={{ width: 440 }} onClick={e => e.stopPropagation()}>
+        <div style={{ padding: '16px 20px', borderBottom: '1px solid #E4E7EC', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#182230' }}>ĐÓNG LẠI PHIÊN</div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#667085', fontSize: 18, lineHeight: 1 }}>×</button>
+        </div>
+        <div style={{ padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ fontSize: 12.5, color: '#667085', marginBottom: 6 }}>Phiên {fmtDate(session.date)} — tổng kết chu kỳ mở lại hiện tại:</div>
+          {[
+            ['Bank bổ sung', gate.bankAdded],
+            ['Đã đối soát thêm', gate.reconciledAdded],
+            ['Giải trình đã duyệt', gate.explanationApproved],
+            ['Chưa xử lý', gate.unresolved],
+            ['Chờ duyệt', gate.pendingApproval],
+          ].map(([label, value]) => (
+            <div key={label as string} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5 }}>
+              <span style={{ color: '#667085' }}>{label}</span>
+              <span style={{ fontWeight: 600, color: (label === 'Chưa xử lý' || label === 'Chờ duyệt') && (value as number) > 0 ? '#B42318' : '#182230' }}>{value}</span>
+            </div>
+          ))}
+          {!gate.canClose && (
+            <div style={{ background: '#FEF3F2', border: '1px solid #FEE4E2', borderRadius: 8, padding: '10px 12px', fontSize: 12.5, color: '#B42318', marginTop: 6 }}>
+              Không thể đóng phiên: còn {gate.blockReason}.
+            </div>
+          )}
+          {error && <div style={{ fontSize: 12, color: '#B42318' }}>{error}</div>}
+        </div>
+        <div style={{ padding: '14px 20px', borderTop: '1px solid #E4E7EC', display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <button className="btn-secondary" onClick={onClose}>Huỷ</button>
+          <button className="btn-primary" disabled={!gate.canClose} onClick={submit}>Xác nhận đóng lại phiên</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── Tab types ────────────────────────────────────────────────────────────────
 
-type TabKey = 'reconciled' | 'exceptions' | 'bank_unreconciled' | 'fb_unreconciled'
+type TabKey = 'reconciled' | 'exceptions' | 'bank_unreconciled' | 'fb_unreconciled' | 'reopen_bank'
 
 // ─── Session Detail Page ─────────────────────────────────────────────────────
 
 function SessionDetailPage({ session, onBack, onGoMissingBills }: {
   session: SessionV2; onBack: () => void; onGoMissingBills: () => void;
 }) {
+  const { currentUser } = useAuth()
+  const reopenStore = useReopenStore()
+  const fbStore = useFacebookUploadStore()
   const [activeTab, setActiveTab] = useState<TabKey>('reconciled')
   const [teamFilter, setTeamFilter] = useState('all')
   const [csFilter, setCsFilter] = useState('all')
@@ -275,6 +426,28 @@ function SessionDetailPage({ session, onBack, onGoMissingBills }: {
   const [refSearch, setRefSearch] = useState('')
   const [drawerRecord, setDrawerRecord] = useState<DrawerRecord | null>(null)
   const [exportNotice, setExportNotice] = useState('')
+  const [showReopenModal, setShowReopenModal] = useState(false)
+  const [showCloseModal, setShowCloseModal] = useState(false)
+  const [importNotice, setImportNotice] = useState<string | null>(null)
+  const [importError, setImportError] = useState<string | null>(null)
+
+  const canReopen = canManageReopen(currentUser!.role)
+  const effectiveStatus = reopenStore.getEffectiveStatus(session)
+  const isReopened = effectiveStatus === 'reopened'
+  const openCycle = reopenStore.getOpenCycle(session.id)
+  const cyclesForSession = reopenStore.getCyclesForSession(session.id)
+  const reopenBankRows = fbStore.getReopenBankBillsForSession(session.id)
+
+  async function handleBankFile(file: File) {
+    setImportError(null); setImportNotice(null)
+    const parsed = isExcelFileName(file.name) ? parseBankXlsxFile(file.name, await file.arrayBuffer()) : parseBankCsvFile(file.name, await file.text())
+    const result = reopenStore.importBankFile({
+      sessionId: session.id, fileName: file.name, parsed,
+      actor: { id: currentUser!.id, name: currentUser!.displayName, role: currentUser!.role },
+    })
+    if (!result.ok) { setImportError(result.error); return }
+    setImportNotice(`Đã import ${result.imported} Bill Bank (bỏ qua ${result.duplicates} trùng lặp, ${result.invalidRows} dòng lỗi${result.unresolvedOwnership > 0 ? `, ${result.unresolvedOwnership} dòng không xác định được CS phụ trách` : ''}).`)
+  }
 
   const records = sessionDetails[session.id]
   const pct = session.bankTotal > 0 ? (session.reconciledAmount / session.bankTotal) * 100 : 0
@@ -304,6 +477,7 @@ function SessionDetailPage({ session, onBack, onGoMissingBills }: {
       exceptions: 'Ngoai_le',
       bank_unreconciled: 'Bank_chua_doi_soat',
       fb_unreconciled: 'Facebook_chua_doi_soat',
+      reopen_bank: 'Bo_sung_mo_lai',
     }
     const dateStr = session.date.replace(/-/g, '').slice(2)
     const filename = `Doi_soat_${dateStr}_${tabLabels[activeTab]}.xlsx`
@@ -328,9 +502,16 @@ function SessionDetailPage({ session, onBack, onGoMissingBills }: {
       key: 'fb_unreconciled', label: 'Facebook chưa đối soát', bills: session.fbUnreconciledBills, amount: session.fbUnreconciledAmount,
       icon: <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M7 2H5C3.9 2 3 2.9 3 4v5c0 1.1.9 2 2 2h3c1.1 0 2-.9 2-2V6.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/><path d="M9 2l2 2-4 4H5V6l4-4z" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/></svg>,
     },
+    // Only shown once this session has ever been reopened (task §25/40) —
+    // never a tab on a plain, never-reopened session.
+    ...(cyclesForSession.length > 0 ? [{
+      key: 'reopen_bank' as TabKey, label: 'Bổ sung (Mở lại)', bills: reopenBankRows.length,
+      amount: Math.round(reopenBankRows.reduce((s, r) => s + r.amount, 0) * 100) / 100,
+      icon: <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M6.5 2v9M2 6.5h9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>,
+    }] : []),
   ]
 
-  const isClosed = session.status === 'closed' || session.status === 'closed_pending'
+  const isClosed = effectiveStatus === 'closed' || effectiveStatus === 'closed_pending'
 
   return (
     <div className="page-content">
@@ -345,16 +526,56 @@ function SessionDetailPage({ session, onBack, onGoMissingBills }: {
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
             <div style={{ fontSize: 17, fontWeight: 700, color: '#182230' }}>Phiên đối soát {fmtDate(session.date)}</div>
-            {statusBadge(session.status)}
-            {session.status === 'closed_pending' && <Badge type="error">Còn tồn đọng</Badge>}
+            {statusBadge(effectiveStatus)}
+            {session.status === 'closed_pending' && !isReopened && <Badge type="error">Còn tồn đọng</Badge>}
+            {cyclesForSession.length > 0 && <span style={{ fontSize: 11.5, color: '#98A2B3' }}>Đã mở lại {cyclesForSession.length} lần</span>}
           </div>
           <div style={{ fontSize: 12.5, color: '#667085', display: 'flex', gap: 16 }}>
-            <span>Hạn xử lý: <strong>{fmtDate(session.processingDeadline)}</strong></span>
-            {!isClosed && <span style={{ color: session.hoursRemaining <= 6 ? '#F04438' : '#344054', fontWeight: 600 }}>Còn {session.hoursRemaining} giờ</span>}
-            {isClosed && session.closedDate && <span style={{ color: '#667085' }}>Đã đóng ngày {fmtDate(session.closedDate)}</span>}
+            {isReopened && openCycle ? (
+              <>
+                <span>Hạn xử lý (mở lại): <strong style={{ color: '#B42318' }}>{new Date(openCycle.deadline).toLocaleString('vi-VN')}</strong></span>
+                <span>Mở lại bởi: <strong>{openCycle.reopenedByName}</strong> lúc {openCycle.reopenedAt}</span>
+              </>
+            ) : (
+              <>
+                <span>Hạn xử lý: <strong>{fmtDate(session.processingDeadline)}</strong></span>
+                {!isClosed && <span style={{ color: session.hoursRemaining <= 6 ? '#F04438' : '#344054', fontWeight: 600 }}>Còn {session.hoursRemaining} giờ</span>}
+                {isClosed && session.closedDate && <span style={{ color: '#667085' }}>Đã đóng ngày {fmtDate(session.closedDate)}</span>}
+              </>
+            )}
           </div>
+          {isReopened && openCycle && (
+            <div style={{ fontSize: 12, color: '#98A2B3', marginTop: 4 }}>Lý do mở lại: {openCycle.reason}</div>
+          )}
         </div>
+        {canReopen && (
+          <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+            {isClosed && !isReopened && (
+              <button className="btn-primary" onClick={() => setShowReopenModal(true)}>Mở lại phiên</button>
+            )}
+            {isReopened && (
+              <button className="btn-primary" style={{ background: '#B42318', borderColor: '#B42318' }} onClick={() => setShowCloseModal(true)}>Đóng lại phiên</button>
+            )}
+          </div>
+        )}
       </div>
+
+      {/* Bổ sung Bill Bank — only while a Reopen Cycle is open (task §19) */}
+      {isReopened && canReopen && (
+        <div className="card" style={{ padding: '14px 18px', marginBottom: 16 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#182230', marginBottom: 8 }}>Bổ sung Bill Bank</div>
+          <label className="upload-zone" style={{ display: 'block', padding: '14px 16px', cursor: 'pointer', maxWidth: 360 }}>
+            <div style={{ fontSize: 12.5, fontWeight: 600, color: '#182230', marginBottom: 3 }}>Chọn file Bank (.csv, .xlsx)</div>
+            <div style={{ fontSize: 11.5, color: '#98A2B3' }}>Reuse định dạng Bank hiện có</div>
+            <input
+              type="file" accept=".csv,.xlsx,.xls" style={{ display: 'none' }}
+              onChange={e => { const f = e.target.files?.[0]; if (f) handleBankFile(f); e.target.value = '' }}
+            />
+          </label>
+          {importNotice && <div style={{ fontSize: 12, color: '#027A48', marginTop: 8 }}>{importNotice}</div>}
+          {importError && <div style={{ fontSize: 12, color: '#B42318', marginTop: 8 }}>{importError}</div>}
+        </div>
+      )}
 
       {/* KPI Cards — row 1: 3 totals */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginBottom: 10 }}>
@@ -620,6 +841,40 @@ function SessionDetailPage({ session, onBack, onGoMissingBills }: {
               </tbody>
             </table>
           )}
+
+          {/* TAB 5: Bổ sung (Mở lại) — only rendered when this session has ever been reopened */}
+          {activeTab === 'reopen_bank' && (
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead><tr>
+                <th>Ngày giao dịch</th><th>CS phụ trách</th>
+                <th>Mã tham chiếu</th><th>Last 4</th>
+                <th style={{ textAlign: 'right' }}>Amount</th>
+                <th>Nguồn</th>
+                <th>Trạng thái</th>
+              </tr></thead>
+              <tbody>
+                {reopenBankRows.length === 0 && (
+                  <tr><td colSpan={7} style={{ textAlign: 'center', padding: '32px 14px' }}>
+                    <div style={{ color: '#344054', fontWeight: 600, marginBottom: 4 }}>Chưa có Bill Bank bổ sung nào</div>
+                  </td></tr>
+                )}
+                {reopenBankRows.map(r => {
+                  const resolved = fbStore.getResolvedBankTxnIds(r.ownerCsId, session.id).has(r.txnId)
+                  return (
+                    <tr key={r.id}>
+                      <td style={{ fontSize: 12.5 }}>{r.bankDate}</td>
+                      <td style={{ fontWeight: 500 }}>{r.ownerCsName}</td>
+                      <td className="mono" style={{ fontSize: 12 }}>{r.reference}</td>
+                      <td className="mono" style={{ fontSize: 12 }}>•••• {r.last4}</td>
+                      <td style={{ textAlign: 'right' }} className="mono">{fmt(r.amount)}</td>
+                      <td style={{ fontSize: 11.5, color: '#98A2B3' }}>{r.sourceFileName}</td>
+                      <td>{resolved ? <Badge type="success">Đã đối soát</Badge> : <Badge type="gray">Chưa đối soát</Badge>}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          )}
         </div>
 
         <div style={{ padding: '10px 16px', borderTop: '1px solid #E4E7EC', fontSize: 12, color: '#667085' }}>
@@ -630,6 +885,12 @@ function SessionDetailPage({ session, onBack, onGoMissingBills }: {
       {drawerRecord && (
         <RecordDrawer record={drawerRecord} onClose={() => setDrawerRecord(null)} onGoMissingBills={onGoMissingBills} />
       )}
+      {showReopenModal && (
+        <ReopenModal onClose={() => setShowReopenModal(false)} onReopened={() => setShowReopenModal(false)} />
+      )}
+      {showCloseModal && (
+        <CloseSessionModal session={session} onClose={() => setShowCloseModal(false)} onClosed={() => setShowCloseModal(false)} />
+      )}
     </div>
   )
 }
@@ -639,13 +900,19 @@ function SessionDetailPage({ session, onBack, onGoMissingBills }: {
 type ViewMode = 'list' | 'detail'
 
 export default function Sessions({ onGoMissingBills }: { onGoMissingBills?: () => void }) {
+  const { currentUser } = useAuth()
+  const reopenStore = useReopenStore()
   const [view, setView] = useState<ViewMode>('list')
   const [selectedSession, setSelectedSession] = useState<SessionV2 | null>(null)
   const [dateFilter, setDateFilter] = useState('')
-  const [statusFilter, setStatusFilter] = useState<SessionStatusV2 | 'all'>('all')
+  const [statusFilter, setStatusFilter] = useState<EffectiveSessionStatus | 'all'>('all')
+  const [showReopenModal, setShowReopenModal] = useState(false)
+
+  const canReopen = canManageReopen(currentUser!.role)
 
   const filtered = sessionsV2.filter(s => {
-    if (statusFilter !== 'all' && s.status !== statusFilter) return false
+    const effective = reopenStore.getEffectiveStatus(s)
+    if (statusFilter !== 'all' && effective !== statusFilter) return false
     if (dateFilter && s.date !== dateFilter) return false
     return true
   })
@@ -674,6 +941,7 @@ export default function Sessions({ onGoMissingBills }: { onGoMissingBills?: () =
             Theo dõi tiến độ và kết quả đối soát theo từng ngày dữ liệu.
           </div>
         </div>
+        {canReopen && <button className="btn-primary" onClick={() => setShowReopenModal(true)}>Mở lại phiên</button>}
       </div>
 
       {/* Filters */}
@@ -684,9 +952,9 @@ export default function Sessions({ onGoMissingBills }: { onGoMissingBills?: () =
           <input type="date" className="text-input" value={dateFilter} onChange={e => setDateFilter(e.target.value)} style={{ width: 148 }} />
         </div>
         <div style={{ width: 1, height: 20, background: '#E4E7EC' }} />
-        <div style={{ display: 'flex', gap: 4, background: '#F9FAFB', borderRadius: 7, padding: 3 }}>
-          {([['all', 'Tất cả'], ['active', 'Đang đối soát'], ['closing_soon', 'Sắp đóng'], ['closed', 'Đã đóng'], ['closed_pending', 'Đã đóng còn tồn đọng']] as [string, string][]).map(([val, label]) => (
-            <button key={val} onClick={() => setStatusFilter(val as SessionStatusV2 | 'all')}
+        <div style={{ display: 'flex', gap: 4, background: '#F9FAFB', borderRadius: 7, padding: 3, flexWrap: 'wrap' }}>
+          {([['all', 'Tất cả'], ['active', 'Đang đối soát'], ['closing_soon', 'Sắp đóng'], ['reopened', 'Đã mở lại'], ['closed', 'Đã đóng'], ['closed_pending', 'Đã đóng còn tồn đọng']] as [string, string][]).map(([val, label]) => (
+            <button key={val} onClick={() => setStatusFilter(val as EffectiveSessionStatus | 'all')}
               style={{ padding: '4px 11px', borderRadius: 5, border: 'none', cursor: 'pointer', background: statusFilter === val ? '#2563EB' : 'transparent', color: statusFilter === val ? '#fff' : '#667085', fontFamily: 'inherit', fontSize: 12, fontWeight: statusFilter === val ? 600 : 500, transition: 'all 0.12s', whiteSpace: 'nowrap' }}>
               {label}
             </button>
@@ -727,11 +995,12 @@ export default function Sessions({ onGoMissingBills }: { onGoMissingBills?: () =
               )}
               {filtered.map(s => {
                 const pct = s.bankTotal > 0 ? (s.reconciledAmount / s.bankTotal) * 100 : 0
-                const isClosed = s.status === 'closed' || s.status === 'closed_pending'
+                const effective = reopenStore.getEffectiveStatus(s)
+                const isClosed = effective === 'closed' || effective === 'closed_pending'
                 return (
                   <tr key={s.id} className="table-row-hover" onClick={() => openDetail(s)}>
                     <td><span style={{ fontWeight: 700, fontSize: 13 }}>{fmtDate(s.date)}</span></td>
-                    <td>{statusBadge(s.status)}</td>
+                    <td>{statusBadge(effective)}</td>
                     <td style={{ textAlign: 'right' }} className="mono">{fmt(s.sheetTotal)}</td>
                     <td style={{ textAlign: 'right' }} className="mono">{fmt(s.bankTotal)}</td>
                     <td style={{ textAlign: 'right' }} className="mono">{fmt(s.fbTotal)}</td>
@@ -791,6 +1060,10 @@ export default function Sessions({ onGoMissingBills }: { onGoMissingBills?: () =
           <span style={{ fontSize: 12, color: '#667085' }}>Nhấn hàng hoặc "Xem chi tiết" để drill-down</span>
         </div>
       </div>
+
+      {showReopenModal && (
+        <ReopenModal onClose={() => setShowReopenModal(false)} onReopened={() => setShowReopenModal(false)} />
+      )}
     </div>
   )
 }

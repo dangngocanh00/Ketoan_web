@@ -5,8 +5,12 @@ import { dedupeAgainstExisting, parseFacebookCsvFile } from './facebookCsvParser
 import { parseFacebookXlsxFile } from './facebookXlsxParser'
 import { isCompletedStatus } from './facebookCanonical'
 import { reconcileBankAgainstFacebook } from './reconciliationEngine'
+import { useReconciliationSettings } from './reconciliationSettings'
+import { missingBillCases, missingBillRecords } from '../data/sharedData'
 import type { FacebookBillCanonical } from './facebookCanonical'
 import type { FileParseResult } from './facebookCsvParser'
+import type { ReconcilableBankRecord } from './reconciliationEngine'
+import type { ReopenBankBill } from './reopenTypes'
 
 let batchSeq = 0
 const EMPTY_IDS: ReadonlySet<string> = new Set()
@@ -85,6 +89,20 @@ export interface SubmitBatchInput {
   alreadyResolvedByExplanation: ReadonlySet<string>
 }
 
+export interface ImportReopenBankRowsInput {
+  sessionId: string
+  cycleId: string
+  fileName: string
+  uploadedByUserId: string
+  uploadedByName: string
+  rows: { txnId: string; bankDate: string; reference: string; last4: string; amount: number; bankDesc: string; ownerCsId: string; ownerCsName: string }[]
+}
+
+export interface ImportReopenBankRowsResult {
+  imported: number
+  duplicates: number
+}
+
 interface FacebookUploadStoreValue {
   submitBatch: (input: SubmitBatchInput) => SubmitBatchResult
   getRecentBatchesForCs: (csId: string, limit?: number) => UploadBatch[]
@@ -98,15 +116,35 @@ interface FacebookUploadStoreValue {
   getResolvedBankTxnIds: (csId: string, sessionId: string) => ReadonlySet<string>
   hasUploadedForSession: (csId: string, sessionId: string) => boolean
   getCompletedFbAmountForTkqc: (csId: string, sessionId: string, tkqcId: string) => number
+
+  // ── Reopen integration (Reopen task) ──────────────────────────────────────
+  // Reopen Bank Bills + the "is this session currently Reopened" flag live
+  // HERE (not in the separate `reopenStore.tsx`, which owns Cycle/Closure-
+  // Version lifecycle) specifically to avoid a circular Provider dependency:
+  // submitBatch (CS Facebook upload) needs to reconcile against reopen Bank
+  // Bills, and reopen Bank import needs to reconcile against already-
+  // uploaded Facebook Bills — both directions meet in the SAME "live Bank↔
+  // Facebook reconciliation state", so it's one store, not two reaching into
+  // each other.
+  isSessionReopened: (sessionId: string) => boolean
+  setReopenState: (sessionId: string, info: { cycleId: string; cycleNumber: number } | null) => void
+  importReopenBankRows: (input: ImportReopenBankRowsInput) => ImportReopenBankRowsResult
+  getReopenBankBillsForSession: (sessionId: string) => ReopenBankBill[]
+  getReopenBankBillsForCs: (csId: string, sessionId: string) => ReopenBankBill[]
 }
 
 const FacebookUploadStoreContext = createContext<FacebookUploadStoreValue | null>(null)
 
-// Mounted inside the CS/Leader branch (see App.tsx) — scoped to Module
-// 1/2/3 only. Admin's separate Upload Bank module is untouched (§0).
+// Mounted at the App ROOT (see App.tsx) — originally Module 3's CS-upload-
+// only store, now ALSO the live reconciliation state for Reopen's Admin-side
+// Bank import (see the interface comment above), so both the Admin/Kế toán
+// and CS/Leader branches need to read/write it.
 export function FacebookUploadStoreProvider({ children }: { children: ReactNode }) {
+  const { tolerancePercent } = useReconciliationSettings()
   const [uploadedBills, setUploadedBills] = useState<FacebookBillCanonical[]>([])
   const [batches, setBatches] = useState<UploadBatch[]>([])
+  const [reopenBankBills, setReopenBankBills] = useState<ReopenBankBill[]>([])
+  const [reopenSessionState, setReopenSessionState] = useState<Record<string, { cycleId: string; cycleNumber: number }>>({})
   const [matchedBankTxnIds, setMatchedBankTxnIds] = useState<Record<string, ReadonlySet<string>>>({})
   const [matchedFbBillIds, setMatchedFbBillIds] = useState<ReadonlySet<string>>(new Set())
 
@@ -155,7 +193,7 @@ export function FacebookUploadStoreProvider({ children }: { children: ReactNode 
       if (input.isExplanationLocked) {
         return { ok: false, error: 'Không thể tải Bill Facebook trong khi giải trình của phiên này đang được duyệt.' }
       }
-      if (!isSessionActive(input.sessionId)) {
+      if (!isSessionActive(input.sessionId) && !reopenSessionState[input.sessionId]) {
         return { ok: false, error: 'Phiên không còn active. Không thể tải lên Bill Facebook.' }
       }
       if (input.files.length === 0) {
@@ -228,11 +266,18 @@ export function FacebookUploadStoreProvider({ children }: { children: ReactNode 
           ...input.alreadyResolvedByExplanation,
           ...(matchedBankTxnIds[key] ?? []),
         ])
-        const bankRecords = getUnresolvedBankRecords(mbc, alreadyResolved)
+        // Reopen task §22/23: reconcile against BOTH any static leftover
+        // unresolved records AND any Reopen Bank Bills imported by Admin/Kế
+        // toán for this same CS+session — ONE combined pool, the SAME
+        // engine/rule, never a parallel "reopen matching" path.
+        const reopenBankRecords: ReconcilableBankRecord[] = reopenBankBills.filter(
+          b => b.ownerCsId === input.ownerCsId && b.sessionId === input.sessionId && !alreadyResolved.has(b.txnId),
+        )
+        const bankRecords = [...getUnresolvedBankRecords(mbc, alreadyResolved), ...reopenBankRecords]
         const sessionFbBills = [...uploadedBills, ...dedup.imported].filter(
           b => b.ownerCsId === input.ownerCsId && b.sessionId === input.sessionId && !matchedFbBillIds.has(b.id),
         )
-        const result = reconcileBankAgainstFacebook(bankRecords, sessionFbBills)
+        const result = reconcileBankAgainstFacebook(bankRecords, sessionFbBills, tolerancePercent)
 
         if (result.newlyMatchedBankTxnIds.length > 0) {
           setMatchedBankTxnIds(prev => {
@@ -251,15 +296,132 @@ export function FacebookUploadStoreProvider({ children }: { children: ReactNode 
       setBatches(prev => [batch, ...prev])
       return { ok: true, batch }
     },
-    [uploadedBills, matchedBankTxnIds, matchedFbBillIds],
+    [uploadedBills, matchedBankTxnIds, matchedFbBillIds, tolerancePercent, reopenBankBills, reopenSessionState],
+  )
+
+  // ── Reopen integration ──────────────────────────────────────────────────
+
+  const isSessionReopened = useCallback(
+    (sessionId: string) => !!reopenSessionState[sessionId],
+    [reopenSessionState],
+  )
+
+  const setReopenState = useCallback(
+    (sessionId: string, info: { cycleId: string; cycleNumber: number } | null) => {
+      setReopenSessionState(prev => {
+        if (!info) {
+          if (!(sessionId in prev)) return prev
+          const next = { ...prev }
+          delete next[sessionId]
+          return next
+        }
+        return { ...prev, [sessionId]: info }
+      })
+    },
+    [],
+  )
+
+  const getReopenBankBillsForSession = useCallback(
+    (sessionId: string) => reopenBankBills.filter(b => b.sessionId === sessionId),
+    [reopenBankBills],
+  )
+
+  const getReopenBankBillsForCs = useCallback(
+    (csId: string, sessionId: string) => reopenBankBills.filter(b => b.ownerCsId === csId && b.sessionId === sessionId),
+    [reopenBankBills],
+  )
+
+  // Reopen task §19-23: Admin/Kế toán's "Bổ sung Bill Bank" action. Dedupes
+  // against BOTH this session's original static `missingBillRecords` (the
+  // txnId may already exist in the data the session was originally built
+  // from) AND every Reopen Bank Bill already imported for this session
+  // across any cycle (§21) — never against other sessions' bank bills,
+  // since a `txnId` collision across unrelated business dates is a
+  // different bank altogether, not a duplicate. Reconciles IMMEDIATELY
+  // against each affected CS's already-uploaded Facebook Bills (§23) — a
+  // Bank Bill can resolve on import, before any NEW Facebook upload happens.
+  const importReopenBankRows = useCallback(
+    (input: ImportReopenBankRowsInput): ImportReopenBankRowsResult => {
+      const staticTxnIds = new Set(
+        missingBillCases.filter(c => c.sessionId === input.sessionId).flatMap(c => missingBillRecords.filter(r => r.caseId === c.id).map(r => r.txnId)),
+      )
+      const existingReopenTxnIds = new Set(reopenBankBills.filter(b => b.sessionId === input.sessionId).map(b => b.txnId))
+
+      const imported: ReopenBankBill[] = []
+      let duplicates = 0
+      const seenThisBatch = new Set<string>()
+      const now = nowStamp()
+      for (const row of input.rows) {
+        if (staticTxnIds.has(row.txnId) || existingReopenTxnIds.has(row.txnId) || seenThisBatch.has(row.txnId)) {
+          duplicates++
+          continue
+        }
+        seenThisBatch.add(row.txnId)
+        imported.push({
+          id: `reopenbank-${++batchSeq}`,
+          cycleId: input.cycleId,
+          sessionId: input.sessionId,
+          txnId: row.txnId,
+          bankDate: row.bankDate,
+          reference: row.reference,
+          last4: row.last4,
+          amount: row.amount,
+          bankDesc: row.bankDesc,
+          ownerCsId: row.ownerCsId,
+          ownerCsName: row.ownerCsName,
+          sourceFileName: input.fileName,
+          uploadedByUserId: input.uploadedByUserId,
+          uploadedByName: input.uploadedByName,
+          uploadedAt: now,
+        })
+      }
+
+      if (imported.length > 0) {
+        setReopenBankBills(prev => [...prev, ...imported])
+
+        // Reconcile each affected CS's newly-imported rows against their
+        // ALREADY-uploaded Facebook Bills for this session — the SAME
+        // engine, same tolerance, one-to-one, never a second matching rule.
+        const byOwner = new Map<string, ReopenBankBill[]>()
+        for (const b of imported) {
+          if (!byOwner.has(b.ownerCsId)) byOwner.set(b.ownerCsId, [])
+          byOwner.get(b.ownerCsId)!.push(b)
+        }
+        for (const [csId, rows] of byOwner) {
+          const key = scopeKey(csId, input.sessionId)
+          const alreadyMatchedBank = matchedBankTxnIds[key] ?? EMPTY_IDS
+          const candidates = rows.filter(r => !alreadyMatchedBank.has(r.txnId))
+          if (candidates.length === 0) continue
+          const sessionFbBills = uploadedBills.filter(b => b.ownerCsId === csId && b.sessionId === input.sessionId && !matchedFbBillIds.has(b.id))
+          const result = reconcileBankAgainstFacebook(candidates, sessionFbBills, tolerancePercent)
+          if (result.newlyMatchedBankTxnIds.length > 0) {
+            setMatchedBankTxnIds(prev => {
+              const merged = new Set(prev[key] ?? [])
+              result.newlyMatchedBankTxnIds.forEach(id => merged.add(id))
+              return { ...prev, [key]: merged }
+            })
+            setMatchedFbBillIds(prev => {
+              const merged = new Set(prev)
+              result.newlyMatchedFbBillIds.forEach(id => merged.add(id))
+              return merged
+            })
+          }
+        }
+      }
+
+      return { imported: imported.length, duplicates }
+    },
+    [reopenBankBills, uploadedBills, matchedBankTxnIds, matchedFbBillIds, tolerancePercent],
   )
 
   const value = useMemo<FacebookUploadStoreValue>(
     () => ({
       submitBatch, getRecentBatchesForCs, getAllBatchesForCs, getAllBatchesForCsIds,
       getResolvedBankTxnIds, hasUploadedForSession, getCompletedFbAmountForTkqc,
+      isSessionReopened, setReopenState, importReopenBankRows, getReopenBankBillsForSession, getReopenBankBillsForCs,
     }),
-    [submitBatch, getRecentBatchesForCs, getAllBatchesForCs, getAllBatchesForCsIds, getResolvedBankTxnIds, hasUploadedForSession, getCompletedFbAmountForTkqc],
+    [submitBatch, getRecentBatchesForCs, getAllBatchesForCs, getAllBatchesForCsIds, getResolvedBankTxnIds, hasUploadedForSession, getCompletedFbAmountForTkqc,
+      isSessionReopened, setReopenState, importReopenBankRows, getReopenBankBillsForSession, getReopenBankBillsForCs],
   )
 
   return <FacebookUploadStoreContext.Provider value={value}>{children}</FacebookUploadStoreContext.Provider>

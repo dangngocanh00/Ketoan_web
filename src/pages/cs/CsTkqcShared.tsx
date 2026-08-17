@@ -1,7 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useAuth } from '../../auth/AuthContext'
 import { teamScopeCsUsers } from '../../auth/permissions'
 import { TODAY, userById } from '../../data/sharedData'
+import { useAccountStore } from '../../domain/accountStore'
 import { getSharedCardsForCs } from '../../domain/sheetTongHop'
 import { useTkqcDeclarationStore } from '../../domain/tkqcDeclarationStore'
 import { Badge, SectionHeader } from './shared'
@@ -27,19 +28,36 @@ export default function CsTkqcShared() {
   const [scope, setScope] = useState<Scope>({ kind: 'self' })
   const [declaringCard, setDeclaringCard] = useState<string | null>(null)
 
+  const { accounts } = useAccountStore()
   const isLeader = currentUser?.role === 'LEADER'
+  // Resolved from the LIVE Account store (Cài đặt Finalize §11).
   const allTeamMembers = useMemo(
-    () => (isLeader && currentUser ? teamScopeCsUsers(currentUser) : []),
-    [isLeader, currentUser],
+    () => (isLeader && currentUser ? teamScopeCsUsers(currentUser, accounts) : []),
+    [isLeader, currentUser, accounts],
   )
   const memberOptions = currentUser ? allTeamMembers.filter(u => u.id !== currentUser.id) : []
+
+  // §17/18 (Cài đặt Finalize, 2nd pass): revalidate a 'member' scope against
+  // the LIVE current team roster — if the selected CS just got moved to a
+  // different team by an Admin, reset back to "Cá nhân tôi" instead of
+  // silently continuing to show their (now out-of-scope) data.
+  useEffect(() => {
+    if (scope.kind !== 'member') return
+    if (!allTeamMembers.some(m => m.id === scope.csId)) setScope({ kind: 'self' })
+  }, [scope, allTeamMembers])
 
   if (!currentUser) return null
 
   const effectiveScope: Scope = isLeader ? scope : { kind: 'self' }
-  const targetCsId = effectiveScope.kind === 'member' ? effectiveScope.csId : effectiveScope.kind === 'self' ? currentUser.id : ''
+  // Domain-layer guard, not just the effect above: even if `scope` hasn't
+  // re-rendered through the effect yet, `targetCsId` itself never resolves
+  // to a CS outside the current live team roster.
+  const validMemberIds = new Set(allTeamMembers.map(m => m.id))
+  const targetCsId =
+    effectiveScope.kind === 'member' && validMemberIds.has(effectiveScope.csId) ? effectiveScope.csId :
+    effectiveScope.kind === 'self' ? currentUser.id : ''
   const targetName =
-    effectiveScope.kind === 'member' ? (userById[effectiveScope.csId]?.full_name ?? '') :
+    effectiveScope.kind === 'member' && validMemberIds.has(effectiveScope.csId) ? (userById[effectiveScope.csId]?.full_name ?? '') :
     effectiveScope.kind === 'self' ? currentUser.displayName : ''
   // §16: Leader can VIEW a member's cards from Team scope but never declare
   // for them — "của ai người đó khai". Own "Cá nhân tôi" scope always acts

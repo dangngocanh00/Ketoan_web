@@ -12,7 +12,10 @@ import { FACEBOOK_REQUIRED_HEADERS, validateFacebookHeaders } from './facebookCa
 import { parseFacebookRows } from './facebookCsvParser'
 import type { FileParseResult } from './facebookCsvParser'
 
-function sheetToRows(ws: XLSX.WorkSheet): string[][] {
+// Exported so the Supplement Session's Bank XLSX parser (bankSupplementParser.ts)
+// can reuse the SAME generic workbook→rows[][] primitive, instead of a second
+// XLSX-reading implementation — only the header/column mapping differs.
+export function sheetToRows(ws: XLSX.WorkSheet): string[][] {
   const raw = XLSX.utils.sheet_to_json<string[]>(ws, { header: 1, raw: false, defval: '' })
   // `raw:false` already gives formatted text (currency symbols, thousands
   // separators, etc. stripped by parseAmount downstream) — just guard

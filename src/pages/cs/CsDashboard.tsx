@@ -1,6 +1,7 @@
 import { useAuth } from '../../auth/AuthContext'
 import { teamScopeCsUsers } from '../../auth/permissions'
 import type { CurrentUser } from '../../auth/types'
+import { useAccountStore } from '../../domain/accountStore'
 import { useCsScope, resolveScopeTarget } from '../../domain/csScope'
 import type { CsScope } from '../../domain/csScope'
 import PersonalDashboard from './PersonalDashboard'
@@ -14,13 +15,16 @@ interface Props {
 export default function CsDashboard({ onNavigateMissingBills }: Props) {
   const { currentUser } = useAuth()
   const { scope, setScope, requestMissingBillFocus } = useCsScope()
+  const { accounts } = useAccountStore()
   if (!currentUser) return null
 
   const isLeader = currentUser.role === 'LEADER'
   // teamScopeCsUsers already includes the Leader themself (they're also a CS
   // — §4) — the Team table shows everyone (§38-style "biết đủ toàn bộ thành
   // viên"), but the dropdown excludes self since "Cá nhân tôi" covers that (§7).
-  const allTeamMembers = isLeader ? teamScopeCsUsers(currentUser) : []
+  // Resolved from the LIVE Account store (Cài đặt Finalize §11) — reflects an
+  // Admin's Team reassignment immediately, no re-login required.
+  const allTeamMembers = isLeader ? teamScopeCsUsers(currentUser, accounts) : []
   const memberOptions = allTeamMembers.filter(u => u.id !== currentUser.id)
 
   const selectValue = scope.kind === 'self' ? 'self' : scope.kind === 'team' ? 'team' : `member:${scope.csId}`
@@ -85,7 +89,8 @@ function ScopedPersonalDashboard({
   scope: CsScope
   onProcess: (csId: string, csName: string, sessionId: string | null, readOnly: boolean) => void
 }) {
-  const target = resolveScopeTarget(currentUser, scope)
+  const { accounts } = useAccountStore()
+  const target = resolveScopeTarget(currentUser, scope, accounts)
   return (
     <>
       {target.readOnly && <ReadOnlyBanner name={target.displayName} />}

@@ -19,6 +19,11 @@ import { CsScopeProvider } from './domain/csScope'
 import { ExplanationStoreProvider } from './domain/explanationStore'
 import { FacebookUploadStoreProvider } from './domain/facebookUploadStore'
 import { TkqcDeclarationStoreProvider } from './domain/tkqcDeclarationStore'
+import { AccountStoreProvider } from './domain/accountStore'
+import { ReconciliationSettingsProvider } from './domain/reconciliationSettings'
+import { NotificationStoreProvider } from './domain/notificationStore'
+import { ReopenStoreProvider } from './domain/reopenStore'
+import Settings from './pages/Settings'
 import type { Page } from './navigation'
 
 export type { Page }
@@ -52,22 +57,15 @@ function AuthenticatedApp() {
             {activePage === 'tkqc-shared' && <TkqcSharedCard />}
             {activePage === 'audit-log' && <AuditLog />}
             {activePage === 'reports' && <Reports onGoSession={() => navigate('sessions')} />}
-            {activePage === 'settings' && (
-              <div style={{ padding: '32px 28px' }}>
-                <div style={{ fontSize: 18, fontWeight: 700, color: '#182230', marginBottom: 4 }}>Settings</div>
-                <div style={{ fontSize: 13, color: '#667085' }}>System configuration — coming soon.</div>
-              </div>
-            )}
+            {activePage === 'settings' && <Settings />}
           </>
         ) : (
           <CsScopeProvider>
-            <FacebookUploadStoreProvider>
-              {activePage === 'dashboard' && <CsDashboard onNavigateMissingBills={() => navigate('missing-bills')} />}
-              {activePage === 'missing-bills' && <CsMissingBills onNavigateUpload={() => navigate('upload')} />}
-              {activePage === 'upload' && <CsUpload onNavigateMissingBills={() => navigate('missing-bills')} />}
-              {activePage === 'tkqc-shared' && <CsTkqcShared />}
-              {activePage === 'audit-log' && <CsHistory />}
-            </FacebookUploadStoreProvider>
+            {activePage === 'dashboard' && <CsDashboard onNavigateMissingBills={() => navigate('missing-bills')} />}
+            {activePage === 'missing-bills' && <CsMissingBills onNavigateUpload={() => navigate('upload')} />}
+            {activePage === 'upload' && <CsUpload onNavigateMissingBills={() => navigate('missing-bills')} />}
+            {activePage === 'tkqc-shared' && <CsTkqcShared />}
+            {activePage === 'audit-log' && <CsHistory />}
           </CsScopeProvider>
         )}
       </main>
@@ -82,23 +80,39 @@ function Gate() {
 
 export default function App() {
   return (
-    <AuthProvider>
-      {/* Mounted above the login gate itself (not just the CS branch) so the
-          shared explanation store survives switching between roles within
-          the same browser tab — CS submits, logs out, Admin logs in and
-          sees the SAME case (task: "cross-role explanation — bắt buộc
-          shared"). It resets on a real page reload since there is no
-          backend/persistence layer in this prototype — see report.
-          TkqcDeclarationStoreProvider is mounted at this SAME root level
-          for the identical reason: "TKQC Chạy Chung" is one shared domain
-          across CS/Leader/Accountant/Admin (task §0) — a CS's declaration
-          must be visible to Accountant/Admin's master view without a
-          reload, exactly like the explanation store already is. */}
-      <ExplanationStoreProvider>
-        <TkqcDeclarationStoreProvider>
-          <Gate />
-        </TkqcDeclarationStoreProvider>
-      </ExplanationStoreProvider>
-    </AuthProvider>
+    // AccountStoreProvider is mounted ABOVE AuthProvider — login itself
+    // (AuthContext.tsx) needs to consult live account status/role/team.
+    //
+    // Below AuthProvider, the order is load-bearing (each Provider consumes
+    // the one(s) above it via hooks — see each file's own header comment):
+    //   ReconciliationSettingsProvider  — tolerance, read by FacebookUploadStore + ReopenStore
+    //     FacebookUploadStoreProvider   — live Bank↔FB reconciliation state
+    //       NotificationStoreProvider   — independent, written to by ReopenStore
+    //         ExplanationStoreProvider  — reads FacebookUploadStore's matched ids
+    //           ReopenStoreProvider     — reads FacebookUploadStore + ExplanationStore + NotificationStore + AccountStore
+    // FacebookUploadStoreProvider moved here (used to be CS-branch-only) —
+    // Reopen's Admin-side Bank import now needs the SAME live reconciliation
+    // state CS's Facebook upload writes to (see that file's header).
+    // ExplanationStoreProvider/TkqcDeclarationStoreProvider stay at this
+    // shared root for the same reason as before: cross-role visibility
+    // without a reload (a CS's submission/declaration must be visible to
+    // Accountant/Admin immediately).
+    <AccountStoreProvider>
+      <AuthProvider>
+        <ReconciliationSettingsProvider>
+          <FacebookUploadStoreProvider>
+            <NotificationStoreProvider>
+              <ExplanationStoreProvider>
+                <ReopenStoreProvider>
+                  <TkqcDeclarationStoreProvider>
+                    <Gate />
+                  </TkqcDeclarationStoreProvider>
+                </ReopenStoreProvider>
+              </ExplanationStoreProvider>
+            </NotificationStoreProvider>
+          </FacebookUploadStoreProvider>
+        </ReconciliationSettingsProvider>
+      </AuthProvider>
+    </AccountStoreProvider>
   )
 }

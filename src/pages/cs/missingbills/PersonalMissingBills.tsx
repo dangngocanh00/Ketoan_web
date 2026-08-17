@@ -4,6 +4,7 @@ import { findCase, getTkqcGapsForCs, getUnresolvedBankRecords } from '../../../d
 import { getCsSessionRows } from '../../../domain/csWorkload'
 import { useExplanationStore } from '../../../domain/explanationStore'
 import { useFacebookUploadStore } from '../../../domain/facebookUploadStore'
+import { useReopenStore } from '../../../domain/reopenStore'
 import { useTkqcDeclarationStore } from '../../../domain/tkqcDeclarationStore'
 import { useCombinedLiveLookup } from '../../../domain/liveWorkloadLookup'
 import { EXPLANATION_REASON_LABEL, latestAttempt } from '../../../domain/explanationTypes'
@@ -35,11 +36,21 @@ export default function PersonalMissingBills({
   const { isLockedForUpload, getCase } = useExplanationStore()
   const { getCompletedFbAmountForTkqc } = useFacebookUploadStore()
   const { getResolvedTkqcIdsForCs } = useTkqcDeclarationStore()
+  const reopenStore = useReopenStore()
   const live = useCombinedLiveLookup(csId)
   const mbc = useMemo(() => findCase(csId, sessionId), [csId, sessionId])
+  // Reopen task §27: fold in this CS's still-unresolved Reopen Bank Bills
+  // for this session, using the EXACT SAME 6 columns below — no separate
+  // table, no Module 2 redesign. Resolved-ness already comes from the SAME
+  // combined lookup (facebookUploadStore's matched ids + accepted
+  // explanation ids), so a Reopen Bank Bill that gets FB-matched or
+  // explanation-accepted disappears from here exactly like a static one.
   const unresolvedRecords = useMemo(
-    () => getUnresolvedBankRecords(mbc, live.getResolvedIds(sessionId)),
-    [mbc, live, sessionId],
+    () => [
+      ...getUnresolvedBankRecords(mbc, live.getResolvedIds(sessionId)),
+      ...reopenStore.getUnresolvedReopenRecordsForCs(csId, sessionId, live.getResolvedIds(sessionId)),
+    ],
+    [mbc, live, sessionId, reopenStore, csId],
   )
   // §40 (Module 3): fold in FB Bills uploaded through Module 3 for a given
   // TKQC/session — the gap reacts immediately after an upload, no hard
@@ -55,6 +66,10 @@ export default function PersonalMissingBills({
   // §59: reuse the EXACT same row Module 1's Dashboard computes for this
   // session — KPI #4 "Trạng thái phiên" must never drift from the Dashboard.
   const dashboardRow = useMemo(() => getCsSessionRows(csId, csName, live).find(r => r.sessionId === sessionId), [csId, csName, live, sessionId])
+  // Reopen task §25: a Reopened session always shows "Đã mở lại" + its own
+  // (new) deadline here — it's never conflated with the static case's
+  // original (already-expired) deadline/status.
+  const reopenCycle = reopenStore.getOpenCycle(sessionId)
 
   const caseObj = getCase(csId, sessionId)
   const latest = latestAttempt(caseObj)
@@ -92,13 +107,18 @@ export default function PersonalMissingBills({
         <KpiCard label="TKQC cần tìm Bill" value={`${tkqcGaps.length} TKQC`} />
         <KpiCard
           label="Trạng thái phiên"
-          value={dashboardRow ? STATUS_META[dashboardRow.status].label : 'Đã xử lý hết'}
+          value={
+            reopenCycle ? 'Đã mở lại'
+              : dashboardRow ? STATUS_META[dashboardRow.status].label
+                : 'Đã xử lý hết'
+          }
           sub={
-            dashboardRow?.status === 'sap_het_han' && dashboardRow.hoursRemaining > 0
-              ? `Còn ${formatHoursRemaining(dashboardRow.hoursRemaining)}`
-              : dashboardRow
-                ? `Hạn ${fmtDate(dashboardRow.deadline)}`
-                : undefined
+            reopenCycle ? `Hạn ${new Date(reopenCycle.deadline).toLocaleString('vi-VN')}`
+              : dashboardRow?.status === 'sap_het_han' && dashboardRow.hoursRemaining > 0
+                ? `Còn ${formatHoursRemaining(dashboardRow.hoursRemaining)}`
+                : dashboardRow
+                  ? `Hạn ${fmtDate(dashboardRow.deadline)}`
+                  : undefined
           }
         />
       </div>
@@ -149,8 +169,16 @@ export default function PersonalMissingBills({
         />
         {unresolvedRecords.length === 0 ? (
           <div className="card" style={{ padding: '20px 18px' }}>
-            <div style={{ fontSize: 13.5, fontWeight: 600, color: '#182230', marginBottom: 4 }}>Đã xử lý hết Bill thiếu</div>
-            <div style={{ fontSize: 12.5, color: '#667085' }}>Không còn Bank Bill nào chưa đối soát trong phiên này.</div>
+            <div style={{ fontSize: 13.5, fontWeight: 600, color: '#182230', marginBottom: 4 }}>
+              {reopenCycle ? 'Không có Bill cần xử lý' : 'Đã xử lý hết Bill thiếu'}
+            </div>
+            <div style={{ fontSize: 12.5, color: '#667085' }}>
+              {/* Reopen task §26: never fabricate a Bill/TKQC just to have
+                  something to show — this is a genuine, explicit empty state. */}
+              {reopenCycle
+                ? 'Bạn không có Bill cần xử lý trong phiên mở lại này.'
+                : 'Không còn Bank Bill nào chưa đối soát trong phiên này.'}
+            </div>
           </div>
         ) : (
           <div className="card" style={{ overflow: 'hidden' }}>

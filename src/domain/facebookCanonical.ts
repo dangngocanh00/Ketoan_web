@@ -94,6 +94,29 @@ export function amountsEqual(a: number | null, b: number | null): boolean {
   return Math.round(a * 100) === Math.round(b * 100)
 }
 
+// Cài đặt Đối soát — "Sai lệch Amount cho phép" (task §7-11). Canonical
+// formula, Bank Amount always the denominator/base:
+//   differencePercent = ABS(fbAmount - bankAmount) / bankAmount * 100
+//   match when differencePercent <= tolerancePercent
+// Cent-integer-safe (never raw float subtraction) — same convention as
+// `amountsEqual`. `tolerancePercent === 0` degrades to EXACTLY `amountsEqual`
+// (task §10), since a 0-cent difference is always <= 0%. Never fuzzy beyond
+// this single, explicit, business-configured percentage — Reference/Last4/
+// COMPLETED stay exact regardless of tolerance (task §9).
+export function amountWithinTolerance(fbAmount: number | null, bankAmount: number | null, tolerancePercent: number): boolean {
+  if (fbAmount == null || bankAmount == null) return false
+  const fbCents = Math.round(fbAmount * 100)
+  const bankCents = Math.round(bankAmount * 100)
+  if (fbCents === bankCents) return true // exact match always passes, incl. bankCents === 0
+  if (bankCents === 0) return false // any non-zero difference against a zero base is never "within tolerance"
+  const diffPercent = (Math.abs(fbCents - bankCents) / Math.abs(bankCents)) * 100
+  // Round off float noise from the division itself before comparing, so a
+  // mathematically-equal-to-the-limit case (e.g. exactly 2%) never fails
+  // due to something like 2.0000000000000004.
+  const rounded = Math.round(diffPercent * 1e6) / 1e6
+  return rounded <= tolerancePercent
+}
+
 // §20-22: Bank Description sometimes carries a "FACEBK *<REF>" prefix — the
 // REAL reference is the code after the prefix, not the raw description.
 // Case-insensitive, tolerant of "FACEBK*REF" / "FACEBK *REF" / extra spaces.

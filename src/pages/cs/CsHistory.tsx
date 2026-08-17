@@ -1,10 +1,12 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useAuth } from '../../auth/AuthContext'
 import { teamScopeCsUsers } from '../../auth/permissions'
 import { fmt, fmtDate, sessionsV2, userById } from '../../data/sharedData'
+import { useAccountStore } from '../../domain/accountStore'
 import { getClosureSnapshot, getClosureSnapshotsForCs } from '../../domain/sessionHistory'
 import type { ClosureSnapshot, FinalResult } from '../../domain/sessionHistory'
 import { useFacebookUploadStore } from '../../domain/facebookUploadStore'
+import { useReopenStore } from '../../domain/reopenStore'
 import { Badge, SectionHeader } from './shared'
 import SessionDetailView from './history/SessionDetailView'
 import UploadHistoryTab from './history/UploadHistoryTab'
@@ -43,20 +45,37 @@ export default function CsHistory() {
   const [resultFilter, setResultFilter] = useState<ResultFilter>('all')
   const [viewingDetail, setViewingDetail] = useState<ViewingDetail | null>(null)
 
+  const { accounts } = useAccountStore()
   const isLeader = currentUser?.role === 'LEADER'
+  // Resolved from the LIVE Account store (Cài đặt Finalize §11) — this only
+  // decides which CS ids a Leader can PICK in the selector below; it never
+  // touches `closureSnapshots`/`getClosureSnapshotsForCs`, which stay 100%
+  // frozen at closure time regardless (see sessionHistory.ts).
   const allTeamMembers = useMemo(
-    () => (isLeader && currentUser ? teamScopeCsUsers(currentUser) : []),
-    [isLeader, currentUser],
+    () => (isLeader && currentUser ? teamScopeCsUsers(currentUser, accounts) : []),
+    [isLeader, currentUser, accounts],
   )
   const memberOptions = currentUser ? allTeamMembers.filter(u => u.id !== currentUser.id) : []
+
+  // §17/18 (Cài đặt Finalize, 2nd pass): revalidate — a CS who just left this
+  // Leader's team can no longer be picked; a still-open selection targeting
+  // them resets to "Cá nhân tôi". Their own frozen History rows are
+  // untouched either way (§20) — this only bounds what a Leader may SELECT.
+  useEffect(() => {
+    if (scope.kind !== 'member') return
+    if (!allTeamMembers.some(m => m.id === scope.csId)) setScope({ kind: 'self' })
+  }, [scope, allTeamMembers])
 
   if (!currentUser) return null
 
   // §7: CS never gets a scope selector at all — always their own history.
   const effectiveScope: HistoryScope = isLeader ? scope : { kind: 'self' }
-  const targetCsId = effectiveScope.kind === 'member' ? effectiveScope.csId : effectiveScope.kind === 'self' ? currentUser.id : ''
+  const validMemberIds = new Set(allTeamMembers.map(m => m.id))
+  const targetCsId =
+    effectiveScope.kind === 'member' && validMemberIds.has(effectiveScope.csId) ? effectiveScope.csId :
+    effectiveScope.kind === 'self' ? currentUser.id : ''
   const targetName =
-    effectiveScope.kind === 'member' ? (userById[effectiveScope.csId]?.full_name ?? '') :
+    effectiveScope.kind === 'member' && validMemberIds.has(effectiveScope.csId) ? (userById[effectiveScope.csId]?.full_name ?? '') :
     effectiveScope.kind === 'self' ? currentUser.displayName : ''
 
   function inDateRange(date: string): boolean {
@@ -225,6 +244,7 @@ function PersonalSessionTable({
   emptyLabel: string
   onSelect: (row: ClosureSnapshot) => void
 }) {
+  const reopenStore = useReopenStore()
   return (
     <div>
       <SectionHeader title="Phiên đối soát" />
@@ -250,19 +270,25 @@ function PersonalSessionTable({
                 </tr>
               </thead>
               <tbody>
-                {rows.map(s => (
-                  <tr key={s.sessionId}>
-                    <td className="mono">{fmtDate(s.sessionDate)}</td>
-                    <td><Badge tone={RESULT_META[s.finalResult].tone}>{RESULT_META[s.finalResult].label}</Badge></td>
-                    <td className="mono">{s.totalBankBills}</td>
-                    <td className="mono">{s.fbMatchedCount}</td>
-                    <td className="mono">{s.explanationResolvedCount}</td>
-                    <td className="mono">{s.unresolvedCount}</td>
-                    <td className="mono">{fmt(s.totalBankAmount)}</td>
-                    <td className="mono">{s.closedAt}</td>
-                    <td><button className="btn-secondary" onClick={() => onSelect(s)}>Xem</button></td>
-                  </tr>
-                ))}
+                {rows.map(s => {
+                  const cycles = reopenStore.getCyclesForSession(s.sessionId)
+                  return (
+                    <tr key={s.sessionId}>
+                      <td className="mono">
+                        {fmtDate(s.sessionDate)}
+                        {cycles.length > 0 && <div style={{ fontSize: 10.5, color: '#7F56D9', fontWeight: 600, marginTop: 2 }}>Đã mở lại {cycles.length} lần</div>}
+                      </td>
+                      <td><Badge tone={RESULT_META[s.finalResult].tone}>{RESULT_META[s.finalResult].label}</Badge></td>
+                      <td className="mono">{s.totalBankBills}</td>
+                      <td className="mono">{s.fbMatchedCount}</td>
+                      <td className="mono">{s.explanationResolvedCount}</td>
+                      <td className="mono">{s.unresolvedCount}</td>
+                      <td className="mono">{fmt(s.totalBankAmount)}</td>
+                      <td className="mono">{s.closedAt}</td>
+                      <td><button className="btn-secondary" onClick={() => onSelect(s)}>Xem</button></td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>

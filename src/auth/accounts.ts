@@ -10,7 +10,7 @@ import { sharedUsers } from '../data/sharedData'
 import type { SharedUser } from '../data/sharedData'
 import type { CurrentUser, Role } from './types'
 
-function mapRole(role: SharedUser['role']): Role {
+export function mapRole(role: SharedUser['role']): Role {
   switch (role) {
     case 'Admin': return 'ADMIN'
     case 'Kế toán': return 'ACCOUNTANT'

@@ -5,6 +5,7 @@ import { fmt, fmtDate, sessionsV2 } from '../../data/sharedData'
 import { listOpenSessionsForCs } from '../../domain/bankBills'
 import { useCsScope } from '../../domain/csScope'
 import { useExplanationStore } from '../../domain/explanationStore'
+import { useReopenStore } from '../../domain/reopenStore'
 import { fmtBytes, useFacebookUploadStore } from '../../domain/facebookUploadStore'
 import type { SubmitBatchFile, SubmitBatchResult } from '../../domain/facebookUploadStore'
 import { isExcelFileName } from '../../domain/facebookXlsxParser'
@@ -29,6 +30,7 @@ export default function CsUpload({ onNavigateMissingBills }: Props) {
   const { uploadFocusSessionId, requestMissingBillFocus, setScope } = useCsScope()
   const { isLockedForUpload, getAcceptedResolvedBillIds } = useExplanationStore()
   const { submitBatch, getRecentBatchesForCs } = useFacebookUploadStore()
+  const reopenStore = useReopenStore()
 
   const [manualSessionId, setManualSessionId] = useState<string | null>(null)
   const [picked, setPicked] = useState<PickedFile[]>([])
@@ -42,7 +44,15 @@ export default function CsUpload({ onNavigateMissingBills }: Props) {
   const ownerCsId = currentUser.id
   const ownerCsName = currentUser.displayName
 
-  const sessionOptions = useMemo(() => listOpenSessionsForCs(ownerCsId), [ownerCsId])
+  // Reopen task §29: "Phiên nhận Bill" includes active sessions this CS may
+  // act on AND any Reopened session they're a stakeholder of — Closed (and
+  // not currently Reopened) sessions never appear here at all.
+  const sessionOptions = useMemo(() => {
+    const base = listOpenSessionsForCs(ownerCsId)
+    const reopened = reopenStore.getReopenSessionsForCs(ownerCsId)
+    const seen = new Set(base.map(s => s.sessionId))
+    return [...base, ...reopened.filter(s => !seen.has(s.sessionId))]
+  }, [ownerCsId, reopenStore])
   const focusValid = uploadFocusSessionId != null && sessionOptions.some(s => s.sessionId === uploadFocusSessionId)
   const sessionId = manualSessionId ?? (focusValid ? uploadFocusSessionId : null) ?? sessionOptions[0]?.sessionId ?? null
   const sessionDate = sessionOptions.find(s => s.sessionId === sessionId)?.sessionDate
@@ -125,7 +135,9 @@ export default function CsUpload({ onNavigateMissingBills }: Props) {
         ) : (
           <select className="select-input" style={{ width: '100%' }} value={sessionId ?? ''} onChange={e => { setManualSessionId(e.target.value); setResult(null) }}>
             {sessionOptions.map(s => (
-              <option key={s.sessionId} value={s.sessionId}>{fmtDate(s.sessionDate)}</option>
+              <option key={s.sessionId} value={s.sessionId}>
+                {fmtDate(s.sessionDate)}{reopenStore.isSessionReopened(s.sessionId) ? ' — Đã mở lại' : ''}
+              </option>
             ))}
           </select>
         )}

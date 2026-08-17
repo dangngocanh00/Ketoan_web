@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react'
 import { sessionsV2, missingBillCases, explanationCases, fmt, fmtDate, mbTeams, mbCsTeamMap } from '../data/sharedData'
 import type { SessionV2 } from '../data/mock'
+import { useReopenStore } from '../domain/reopenStore'
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Helpers
@@ -186,6 +187,14 @@ function DailyDetail({ session, onBack, onGoSession }: {
   const snapshotId = `RPT-${session.date.replace(/-/g, '')}`
   const closedDateDisplay = session.closedDate ? formatDate(session.closedDate) + ' 23:59' : '—'
 
+  // Reopen task §40/42: no Supplement cross-reference — this business
+  // session is always the SAME `session.id`/`session.date`, never a second
+  // record. Just a light "Đã mở lại N lần" indicator, read-only; the
+  // Snapshot above stays the ORIGINAL frozen closure (Version 1) — Reports
+  // is not redesigned to recompute against later Closure Versions here.
+  const { getCyclesForSession } = useReopenStore()
+  const reopenCycles = getCyclesForSession(session.id)
+
   return (
     <div className="page-content">
       <BackBtn label="Quay lại Báo cáo" onClick={onBack} />
@@ -216,6 +225,12 @@ function DailyDetail({ session, onBack, onGoSession }: {
           </button>
         )}
       </div>
+
+      {reopenCycles.length > 0 && (
+        <div style={{ background: '#FFFAEB', border: '1px solid #FEDF89', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 12, color: '#B54708' }}>
+          <span style={{ fontWeight: 700 }}>Đã mở lại {reopenCycles.length} lần</span> — xem chi tiết tại "Phiên đối soát". Snapshot ở trên là kết quả gốc; kết quả mới nhất nằm ở Closure Version mới nhất của phiên.
+        </div>
+      )}
 
       {/* §9: KPI cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10, marginBottom: 16 }}>
