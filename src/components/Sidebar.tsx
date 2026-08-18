@@ -4,7 +4,7 @@ import type { Page } from '../navigation'
 import { useAuth } from '../auth/AuthContext'
 import { roleLabel, usesAdminUI } from '../auth/permissions'
 import { useAccountStore } from '../domain/accountStore'
-import { useNotificationStore } from '../domain/notificationStore'
+import { useMissingBillsBadgeCount } from '../domain/missingBillsBadge'
 
 interface Props {
   activePage: Page
@@ -78,7 +78,7 @@ function navForAdmin(): { business: NavItem[]; system: NavItem[] } {
       { id: 'dashboard', label: 'Bảng điều hành', icon: ICONS.dashboard },
       { id: 'sessions', label: 'Phiên đối soát', icon: ICONS.sessions },
       { id: 'reports', label: 'Báo cáo', icon: ICONS.reports },
-      { id: 'missing-bills', label: 'Bill thiếu', icon: ICONS['missing-bills'], badge: 8 },
+      { id: 'missing-bills', label: 'Bill thiếu', icon: ICONS['missing-bills'] },
       { id: 'upload', label: 'Tải lên dữ liệu', icon: ICONS.upload },
       { id: 'tkqc-shared', label: 'TKQC Chạy Chung', icon: ICONS['tkqc-shared'] },
     ],
@@ -101,60 +101,6 @@ function navForCs(): { business: NavItem[]; system: NavItem[] } {
       { id: 'audit-log', label: 'Lịch sử', icon: ICONS['audit-log'] },
     ],
   }
-}
-
-// Reopen task §12/13: minimal in-memory notification indicator — real state
-// (recipient/createdAt/read/sessionId/type), no external channel. Shared by
-// both Admin/Kế toán (who trigger Reopen) and CS/Leader (who receive it).
-function NotificationBell({ userId }: { userId: string }) {
-  const { getForUser, getUnreadCountForUser, markRead, markAllReadForUser } = useNotificationStore()
-  const [open, setOpen] = useState(false)
-  const items = getForUser(userId)
-  const unread = getUnreadCountForUser(userId)
-
-  return (
-    <div style={{ padding: '10px 10px 4px', position: 'relative' }}>
-      <button
-        onClick={() => { setOpen(o => !o); if (!open) markAllReadForUser(userId) }}
-        style={{
-          width: '100%', display: 'flex', alignItems: 'center', gap: 8,
-          background: 'rgba(255,255,255,0.04)', border: 'none', borderRadius: 7,
-          padding: '8px 10px', cursor: 'pointer', color: 'rgba(255,255,255,0.75)', fontFamily: 'inherit',
-        }}
-      >
-        <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
-          <path d="M7.5 1.5a4 4 0 00-4 4v2.5L2 10.5h11L11.5 8V5.5a4 4 0 00-4-4z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
-          <path d="M6 12.5a1.5 1.5 0 003 0" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-        </svg>
-        <span style={{ flex: 1, textAlign: 'left', fontSize: 12.5 }}>Thông báo</span>
-        {unread > 0 && (
-          <span style={{ background: '#F04438', color: '#fff', fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 10, minWidth: 18, textAlign: 'center' }}>{unread}</span>
-        )}
-      </button>
-      {open && (
-        <div style={{
-          position: 'absolute', left: 10, right: 10, top: '100%', marginTop: 4,
-          background: '#1D2939', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8,
-          boxShadow: '0 4px 16px rgba(0,0,0,0.3)', zIndex: 20, maxHeight: 320, overflowY: 'auto',
-        }}>
-          {items.length === 0 ? (
-            <div style={{ padding: '14px 12px', fontSize: 12, color: 'rgba(255,255,255,0.4)' }}>Không có thông báo nào.</div>
-          ) : (
-            items.map(n => (
-              <div
-                key={n.id}
-                onClick={() => markRead(n.id)}
-                style={{ padding: '9px 12px', borderBottom: '1px solid rgba(255,255,255,0.06)', cursor: 'pointer' }}
-              >
-                <div style={{ fontSize: 12, color: '#fff', lineHeight: 1.4 }}>{n.message}</div>
-                <div style={{ fontSize: 10.5, color: 'rgba(255,255,255,0.35)', marginTop: 3 }}>{n.createdAt}</div>
-              </div>
-            ))
-          )}
-        </div>
-      )}
-    </div>
-  )
 }
 
 function NavButton({ item, active, onClick }: { item: NavItem; active: boolean; onClick: () => void }) {
@@ -186,10 +132,16 @@ export default function Sidebar({ activePage, onNavigate }: Props) {
   const { currentUser, logout } = useAuth()
   const { accounts, teams } = useAccountStore()
   const [menuOpen, setMenuOpen] = useState(false)
+  // Live workload count (never a notification/unread count — see
+  // missingBillsBadge.ts) for the "Bill thiếu" nav item, scoped per role.
+  const missingBillsBadge = useMissingBillsBadgeCount()
 
   if (!currentUser) return null
 
-  const { business, system } = usesAdminUI(currentUser.role) ? navForAdmin() : navForCs()
+  const { business: rawBusiness, system } = usesAdminUI(currentUser.role) ? navForAdmin() : navForCs()
+  const business = rawBusiness.map(item =>
+    item.id === 'missing-bills' ? { ...item, badge: missingBillsBadge > 0 ? missingBillsBadge : undefined } : item,
+  )
   // Live lookup (Cài đặt Finalize §11) — reflects an Admin's Team
   // reassignment immediately, not just the team cached at login time.
   const liveTeamId = accounts.find(a => a.userId === currentUser.id)?.teamId ?? null
@@ -234,8 +186,6 @@ export default function Sidebar({ activePage, onNavigate }: Props) {
           </div>
         </div>
       </div>
-
-      <NotificationBell userId={currentUser.id} />
 
       {/* Nav */}
       <nav style={{ flex: 1, paddingTop: 4 }}>

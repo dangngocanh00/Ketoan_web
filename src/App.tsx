@@ -21,7 +21,6 @@ import { FacebookUploadStoreProvider } from './domain/facebookUploadStore'
 import { TkqcDeclarationStoreProvider } from './domain/tkqcDeclarationStore'
 import { AccountStoreProvider } from './domain/accountStore'
 import { ReconciliationSettingsProvider } from './domain/reconciliationSettings'
-import { NotificationStoreProvider } from './domain/notificationStore'
 import { ReopenStoreProvider } from './domain/reopenStore'
 import Settings from './pages/Settings'
 import type { Page } from './navigation'
@@ -44,32 +43,39 @@ function AuthenticatedApp() {
 
   const admin = usesAdminUI(role)
 
+  // CsScopeProvider now wraps Sidebar too (not just the CS/Leader <main>
+  // content) — the sidebar's "Bill thiếu" workload badge needs to read a
+  // Leader's current scope (self/member/team) via useCsScope() to stay in
+  // sync with whatever Dashboard/Bill thiếu has selected. Harmless for
+  // Admin/Accountant/CS, who never call useCsScope().
   return (
-    <div style={{ display: 'flex', height: '100vh', background: '#F5F7FB', overflow: 'hidden' }}>
-      <Sidebar activePage={activePage} onNavigate={navigate} />
-      <main style={{ flex: 1, overflow: 'auto', minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-        {admin ? (
-          <>
-            {activePage === 'dashboard' && <Dashboard onNavigate={navigate} />}
-            {activePage === 'sessions' && <Sessions onGoMissingBills={() => navigate('missing-bills')} />}
-            {activePage === 'missing-bills' && <MissingBills />}
-            {activePage === 'upload' && <Upload />}
-            {activePage === 'tkqc-shared' && <TkqcSharedCard />}
-            {activePage === 'audit-log' && <AuditLog />}
-            {activePage === 'reports' && <Reports onGoSession={() => navigate('sessions')} />}
-            {activePage === 'settings' && <Settings />}
-          </>
-        ) : (
-          <CsScopeProvider>
-            {activePage === 'dashboard' && <CsDashboard onNavigateMissingBills={() => navigate('missing-bills')} />}
-            {activePage === 'missing-bills' && <CsMissingBills onNavigateUpload={() => navigate('upload')} />}
-            {activePage === 'upload' && <CsUpload onNavigateMissingBills={() => navigate('missing-bills')} />}
-            {activePage === 'tkqc-shared' && <CsTkqcShared />}
-            {activePage === 'audit-log' && <CsHistory />}
-          </CsScopeProvider>
-        )}
-      </main>
-    </div>
+    <CsScopeProvider>
+      <div style={{ display: 'flex', height: '100vh', background: '#F5F7FB', overflow: 'hidden' }}>
+        <Sidebar activePage={activePage} onNavigate={navigate} />
+        <main style={{ flex: 1, overflow: 'auto', minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+          {admin ? (
+            <>
+              {activePage === 'dashboard' && <Dashboard onNavigate={navigate} />}
+              {activePage === 'sessions' && <Sessions onGoMissingBills={() => navigate('missing-bills')} />}
+              {activePage === 'missing-bills' && <MissingBills />}
+              {activePage === 'upload' && <Upload />}
+              {activePage === 'tkqc-shared' && <TkqcSharedCard />}
+              {activePage === 'audit-log' && <AuditLog />}
+              {activePage === 'reports' && <Reports onGoSession={() => navigate('sessions')} />}
+              {activePage === 'settings' && <Settings />}
+            </>
+          ) : (
+            <>
+              {activePage === 'dashboard' && <CsDashboard onNavigateMissingBills={() => navigate('missing-bills')} />}
+              {activePage === 'missing-bills' && <CsMissingBills onNavigateUpload={() => navigate('upload')} />}
+              {activePage === 'upload' && <CsUpload onNavigateMissingBills={() => navigate('missing-bills')} />}
+              {activePage === 'tkqc-shared' && <CsTkqcShared />}
+              {activePage === 'audit-log' && <CsHistory />}
+            </>
+          )}
+        </main>
+      </div>
+    </CsScopeProvider>
   )
 }
 
@@ -87,9 +93,8 @@ export default function App() {
     // the one(s) above it via hooks — see each file's own header comment):
     //   ReconciliationSettingsProvider  — tolerance, read by FacebookUploadStore + ReopenStore
     //     FacebookUploadStoreProvider   — live Bank↔FB reconciliation state
-    //       NotificationStoreProvider   — independent, written to by ReopenStore
-    //         ExplanationStoreProvider  — reads FacebookUploadStore's matched ids
-    //           ReopenStoreProvider     — reads FacebookUploadStore + ExplanationStore + NotificationStore + AccountStore
+    //       ExplanationStoreProvider   — reads FacebookUploadStore's matched ids
+    //         ReopenStoreProvider     — reads FacebookUploadStore + ExplanationStore + AccountStore
     // FacebookUploadStoreProvider moved here (used to be CS-branch-only) —
     // Reopen's Admin-side Bank import now needs the SAME live reconciliation
     // state CS's Facebook upload writes to (see that file's header).
@@ -97,19 +102,22 @@ export default function App() {
     // shared root for the same reason as before: cross-role visibility
     // without a reload (a CS's submission/declaration must be visible to
     // Accountant/Admin immediately).
+    //
+    // There is no in-app notification store — this system does not have a
+    // notification center. Operational notifications will be delivered via
+    // Telegram (per AezCheck Telegram User ID linkage) as a separate,
+    // future integration; this UI never depends on it.
     <AccountStoreProvider>
       <AuthProvider>
         <ReconciliationSettingsProvider>
           <FacebookUploadStoreProvider>
-            <NotificationStoreProvider>
-              <ExplanationStoreProvider>
-                <ReopenStoreProvider>
-                  <TkqcDeclarationStoreProvider>
-                    <Gate />
-                  </TkqcDeclarationStoreProvider>
-                </ReopenStoreProvider>
-              </ExplanationStoreProvider>
-            </NotificationStoreProvider>
+            <ExplanationStoreProvider>
+              <ReopenStoreProvider>
+                <TkqcDeclarationStoreProvider>
+                  <Gate />
+                </TkqcDeclarationStoreProvider>
+              </ReopenStoreProvider>
+            </ExplanationStoreProvider>
           </FacebookUploadStoreProvider>
         </ReconciliationSettingsProvider>
       </AuthProvider>

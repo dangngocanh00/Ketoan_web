@@ -313,16 +313,6 @@ const _generated = (() => {
   // ── Audit log (2000+ events) ─────────────────────────────────────────────────
   const auditEvents: AuditEntry[] = []
 
-  const EVENT_TYPES: { cat: AuditEntry['category']; templates: [string, string, string][] }[] = [
-    { cat: 'upload', templates: [['Upload Bank file', '{actor}', '{ref}'], ['Upload Facebook file', '{actor}', '{ref}'], ['Tải lên file TKQC', '{actor}', '{ref}']] },
-    { cat: 'reconciliation', templates: [['Đối soát thành công', 'Hệ thống', '{ref}'], ['Phát hiện Bill thiếu', 'Hệ thống', '{ref}'], ['Giải trình được duyệt', '{actor}', '{ref}']] },
-    { cat: 'cs_action', templates: [['CS upload Bill bổ sung', '{actor}', '{ref}'], ['CS gửi giải trình', '{actor}', '{ref}'], ['CS paste Bill', '{actor}', '{ref}']] },
-    { cat: 'admin_action', templates: [['Admin chấp nhận giải trình', '{actor}', '{ref}'], ['Admin từ chối giải trình', '{actor}', '{ref}']] },
-    { cat: 'session', templates: [['Mở phiên đối soát', 'Hệ thống', '{session}'], ['Đóng phiên đối soát', 'Hệ thống', '{session}']] },
-    { cat: 'notification', templates: [['Gửi Telegram cho CS', 'Hệ thống', '{actor}'], ['Nhắc CS sau 24h', 'Hệ thống', '{actor}']] },
-    { cat: 'assignment', templates: [['Phân công phiên', 'Admin', '{session}'], ['Cập nhật TKQC mapping', 'Admin', '{actor}']] },
-  ]
-
   const csNames = csUsersList.map(u => u.full_name)
   const adminNames = ['Admin', 'Kế toán']
   const sampleRefs = txns.slice(0, 200).map(t => t.ref)

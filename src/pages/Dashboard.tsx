@@ -267,10 +267,6 @@ export default function Dashboard({ onNavigate }: Props) {
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <span className="badge" style={{ background: '#EFF8FF', color: '#175CD3', fontSize: 12, fontWeight: 700, padding: '4px 12px', borderRadius: 6 }}>Admin</span>
-          <button className="btn-secondary" style={{ fontSize: 12.5, display: 'flex', alignItems: 'center', gap: 5 }}>
-            <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M1 2.5h11M3 6.5h7M5 10.5h3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>
-            Xuất báo cáo
-          </button>
         </div>
       </div>
 

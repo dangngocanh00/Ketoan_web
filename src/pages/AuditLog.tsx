@@ -5,7 +5,6 @@ import type { AuditEntry } from '../data/mock'
 const categoryConfig: Record<AuditEntry['category'], { label: string; bg: string; color: string }> = {
   upload: { label: 'Upload', bg: '#EFF8FF', color: '#175CD3' },
   reconciliation: { label: 'Đối soát', bg: '#ECFDF3', color: '#027A48' },
-  assignment: { label: 'Phân công', bg: '#F4F3FF', color: '#5925DC' },
   cs_action: { label: 'CS hành động', bg: '#FFFAEB', color: '#B54708' },
   admin_action: { label: 'Admin', bg: '#FEF3F2', color: '#B42318' },
   session: { label: 'Phiên', bg: '#F2F4F7', color: '#344054' },

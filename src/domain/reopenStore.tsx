@@ -18,21 +18,23 @@
  *
  * Mounted at the App root, BELOW `facebookUploadStore`/`explanationStore`
  * (both of whose live state this store reads to compute Close Gate status
- * and Closure Versions) and BELOW `notificationStore`/`accountStore` (both
- * of which it writes to / reads from for Reopen notifications).
+ * and Closure Versions).
+ *
+ * This store has NO notification side effect. There is no in-app
+ * notification store in this system — a successful Reopen (and the 24h/12h
+ * reminder business rule, still documented in `notificationContract.ts` /
+ * `reopenReminders.ts` as a pure domain contract) will be delivered via
+ * Telegram in a future integration, keyed off the AezCheck Telegram User ID.
+ * Reopen must work standalone regardless of that transport.
  */
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import { createContext, useCallback, useContext, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { sessionsV2, missingBillCases, missingBillRecords } from '../data/sharedData'
 import type { SessionV2 } from '../data/mock'
 import { isSessionClosed } from './sessionLifecycle'
 import { useFacebookUploadStore } from './facebookUploadStore'
 import { useExplanationStore } from './explanationStore'
-import { useNotificationStore } from './notificationStore'
-import { useAccountStore } from './accountStore'
 import type { BankFileParseResult } from './bankSupplementParser'
-import { computeDueReminders } from './reopenReminders'
-import type { TeamReminderGroup } from './reopenReminders'
 import type { ClosureSnapshot, ClosureBankBillRow } from './sessionHistory'
 import type { ReopenCycle, EffectiveSessionStatus } from './reopenTypes'
 import type { Role } from '../auth/types'
@@ -132,18 +134,14 @@ const ReopenStoreContext = createContext<ReopenStoreValue | null>(null)
 
 let cycleSeq = 0
 let auditSeq = 0
-const REMINDER_TICK_MS = 30_000
 
 export function ReopenStoreProvider({ children }: { children: ReactNode }) {
   const [cycles, setCycles] = useState<ReopenCycle[]>([])
   const [closureVersions, setClosureVersions] = useState<Record<string, ClosureSnapshot[]>>({})
   const [auditEvents, setAuditEvents] = useState<ReopenAuditEvent[]>([])
-  const [sentReminderKeys, setSentReminderKeys] = useState<ReadonlySet<string>>(new Set())
 
   const fb = useFacebookUploadStore()
   const explanation = useExplanationStore()
-  const notifications = useNotificationStore()
-  const { accounts, teams } = useAccountStore()
 
   const logAudit = useCallback((event: Omit<ReopenAuditEvent, 'id' | 'timestamp'>) => {
     setAuditEvents(prev => [{ ...event, id: `REOPEN-AUDIT-${++auditSeq}`, timestamp: nowStamp() }, ...prev])
@@ -275,32 +273,14 @@ export function ReopenStoreProvider({ children }: { children: ReactNode }) {
         sessionId: input.sessionId, businessDate: session.date, cycleNumber, reason: cycle.reason,
       })
 
-      // §12: immediate notification — every relevant CS + their Leader(s),
-      // BEFORE any Bank import happens.
-      const stakeholderIds = getStakeholderCsIdsForSession(input.sessionId)
-      const leaderIds = new Set<string>()
-      for (const csId of stakeholderIds) {
-        const acc = accounts.find(a => a.userId === csId)
-        if (acc?.teamId) {
-          const team = teams.find(t => t.teamId === acc.teamId)
-          if (team?.leaderUserId) leaderIds.add(team.leaderUserId)
-        }
-      }
-      const message = `Phiên ${session.date.split('-').reverse().join('/')} đã được mở lại. Vui lòng kiểm tra Bill thiếu và bổ sung Bill Facebook nếu có.`
-      for (const csId of stakeholderIds) {
-        const acc = accounts.find(a => a.userId === csId)
-        if (acc && acc.status !== 'active') continue // §45: inactive AezCheck user never gets operational notifications
-        notifications.push({ type: 'SESSION_REOPENED', recipientUserId: csId, sessionId: input.sessionId, message })
-      }
-      for (const leaderId of leaderIds) {
-        const acc = accounts.find(a => a.userId === leaderId)
-        if (acc && acc.status !== 'active') continue
-        notifications.push({ type: 'SESSION_REOPENED', recipientUserId: leaderId, sessionId: input.sessionId, message })
-      }
+      // Reopen has no notification side effect here — production will send
+      // a Telegram notification to the relevant CS + Leader(s) as a separate
+      // integration keyed off the AezCheck Telegram User ID. Reopen succeeds
+      // independent of that transport.
 
       return { ok: true, cycleId, cycleNumber }
     },
-    [getOpenCycle, getCyclesForSession, fb, logAudit, getStakeholderCsIdsForSession, accounts, teams, notifications],
+    [getOpenCycle, getCyclesForSession, fb, logAudit],
   )
 
   const importBankFile = useCallback(
@@ -393,51 +373,10 @@ export function ReopenStoreProvider({ children }: { children: ReactNode }) {
     [getOpenCycle, getCloseGateSummary, fb, explanation, closureVersions, logAudit],
   )
 
-  // §14-17: reminder ticker — a lightweight live poll (not a real cron),
-  // consistent with this prototype's "no external scheduler" constraint.
-  // Recomputes workload FRESH on every tick (never caches a count) and
-  // dedupes strictly via `sentReminderKeys` (session+scope+milestone).
-  useEffect(() => {
-    const tick = () => {
-      const now = Date.now()
-      const dueAll: ReturnType<typeof computeDueReminders> = []
-      for (const cycle of cycles) {
-        if (cycle.status !== 'OPEN') continue
-        const stakeholders = [...getStakeholderCsIdsForSession(cycle.sessionId)]
-        const byTeam = new Map<string, { leaderId: string | null; teamId: string | null; members: { csId: string; csName: string; missingBills: number }[] }>()
-        for (const csId of stakeholders) {
-          const acc = accounts.find(a => a.userId === csId)
-          if (acc && acc.status !== 'active') continue // §45
-          const teamId = acc?.teamId ?? null
-          const team = teamId ? teams.find(t => t.teamId === teamId) : undefined
-          const groupKey = teamId ?? `none:${csId}`
-          if (!byTeam.has(groupKey)) byTeam.set(groupKey, { leaderId: team?.leaderUserId ?? null, teamId, members: [] })
-          const missingBills = getUnresolvedReopenRecordsForCs(csId, cycle.sessionId, new Set()).length
-          byTeam.get(groupKey)!.members.push({ csId, csName: acc?.fullName ?? csId, missingBills })
-        }
-        for (const group of byTeam.values()) {
-          const reminderGroup: TeamReminderGroup = { sessionId: cycle.sessionId, deadline: cycle.deadline, leaderId: group.leaderId, teamId: group.teamId, members: group.members }
-          dueAll.push(...computeDueReminders(now, reminderGroup, sentReminderKeys))
-        }
-      }
-      if (dueAll.length === 0) return
-      setSentReminderKeys(prev => {
-        const merged = new Set(prev)
-        dueAll.forEach(d => merged.add(d.dedupeKey))
-        return merged
-      })
-      for (const d of dueAll) {
-        notifications.push({
-          type: d.milestone === '24h' ? (d.scope.kind === 'cs' ? 'REMINDER_24H' : 'REMINDER_LEADER_SUMMARY') : (d.scope.kind === 'cs' ? 'REMINDER_12H' : 'REMINDER_LEADER_SUMMARY'),
-          recipientUserId: d.recipientUserId, sessionId: d.dedupeKey.split('|')[0], message: d.message,
-        })
-      }
-    }
-    const id = setInterval(tick, REMINDER_TICK_MS)
-    tick() // also check once immediately on mount/dependency change, not just after the first interval
-    return () => clearInterval(id)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cycles, accounts, teams])
+  // No live reminder ticker here — the 24h/12h reminder rule stays defined
+  // as a pure domain contract (`notificationContract.ts` / `reopenReminders
+  // .ts`) for a future Telegram scheduler to consume; this store does not
+  // run a scheduler or send anything itself.
 
   const value = useMemo<ReopenStoreValue>(
     () => ({

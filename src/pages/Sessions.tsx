@@ -279,6 +279,23 @@ function monthLabel(m: string): string {
   return `Tháng ${mm}/${y}`
 }
 
+// A business date can have more than one session, so "Phiên N" must number
+// per businessDate (reset for each date) — NEVER by position in the overall
+// dropdown list, which would number across dates instead of within a date.
+function sessionOptionLabels(sessions: SessionV2[]): Map<string, string> {
+  const byDate = new Map<string, SessionV2[]>()
+  for (const s of sessions) {
+    if (!byDate.has(s.date)) byDate.set(s.date, [])
+    byDate.get(s.date)!.push(s)
+  }
+  const labels = new Map<string, string>()
+  for (const group of byDate.values()) {
+    const sorted = [...group].sort((a, b) => a.id.localeCompare(b.id))
+    sorted.forEach((s, i) => labels.set(s.id, `${fmtDate(s.date)} — Phiên ${i + 1}`))
+  }
+  return labels
+}
+
 function ReopenModal({ onClose, onReopened }: { onClose: () => void; onReopened: (sessionId: string) => void }) {
   const { currentUser } = useAuth()
   const reopenStore = useReopenStore()
@@ -291,6 +308,7 @@ function ReopenModal({ onClose, onReopened }: { onClose: () => void; onReopened:
 
   const openSessionIds = new Set(reopenStore.cycles.filter(c => c.status === 'OPEN').map(c => c.sessionId))
   const eligible = useMemo(() => (month ? listClosedSessionsInMonth(month, openSessionIds) : []), [month, reopenStore.cycles])
+  const eligibleLabels = useMemo(() => sessionOptionLabels(eligible), [eligible])
 
   function handleMonthChange(next: string) {
     setMonth(next)
@@ -328,7 +346,7 @@ function ReopenModal({ onClose, onReopened }: { onClose: () => void; onReopened:
             ) : (
               <select className="select-input" style={{ width: '100%' }} value={sessionId} onChange={e => setSessionId(e.target.value)}>
                 <option value="">— Chọn phiên —</option>
-                {eligible.map((s, i) => <option key={s.id} value={s.id}>{fmtDate(s.date)} — Phiên {i + 1}</option>)}
+                {eligible.map(s => <option key={s.id} value={s.id}>{eligibleLabels.get(s.id)}</option>)}
               </select>
             )}
           </div>

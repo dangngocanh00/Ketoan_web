@@ -62,7 +62,7 @@ export interface AuditEntry {
   actor: string
   target: string
   detail: string
-  category: 'upload' | 'reconciliation' | 'assignment' | 'cs_action' | 'admin_action' | 'session' | 'notification'
+  category: 'upload' | 'reconciliation' | 'cs_action' | 'admin_action' | 'session' | 'notification'
 }
 
 export interface CsAttentionItem {
@@ -299,25 +299,6 @@ export const missingBills: MissingBill[] = [
   { id: 'm8', sessionDate: '2026-08-12', referenceCode: 'FB-2026-081261034', cardLast4: '4412', tkqc: 'TKQC-B', cs: 'Trang', team: 'Team Growth', amount: 550, t0: '2026-08-12 11:05', status: 'pending', reminderSent: false },
 ]
 
-// ─── Audit Log ────────────────────────────────────────────────────────────────
-
-export const auditLog: AuditEntry[] = [
-  { id: 'a1', timestamp: '2026-08-12 11:05', action: 'Kích hoạt đối soát', actor: 'system', target: 'Phiên 12/08/2026', detail: '2.341 giao dịch — 1.876 khớp', category: 'reconciliation' },
-  { id: 'a2', timestamp: '2026-08-12 11:05', action: 'Tải lên dữ liệu Bank', actor: 'admin@aez.vn', target: 'Phiên 12/08/2026', detail: 'File: bank_txn_20260812.xlsx — 2.341 giao dịch SUCCESS hợp lệ', category: 'upload' },
-  { id: 'a3', timestamp: '2026-08-12 09:30', action: 'Giao Bill thiếu', actor: 'system', target: 'FB-2026-081112334', detail: 'Giao cho Diệp (Team Scale) — chủ sở hữu TKQC-C từ 10/08', category: 'assignment' },
-  { id: 'a4', timestamp: '2026-08-12 09:30', action: 'Gửi thông báo Telegram', actor: 'system', target: 'Diệp', detail: 'Bill thiếu FB-2026-081112334 — $3.200', category: 'notification' },
-  { id: 'a5', timestamp: '2026-08-12 09:14', action: 'Gửi nhắc nhở Telegram', actor: 'system', target: 'Mạnh', detail: 'Chưa có hành động sau 24h — FB-2026-081023451', category: 'notification' },
-  { id: 'a6', timestamp: '2026-08-11 16:48', action: 'CS nộp giải trình', actor: 'trang@aez.vn', target: 'FB-2026-081031105', detail: 'Lý do: Campaign dừng — khoản phí đã hoàn trên Facebook. Đính kèm bằng chứng.', category: 'cs_action' },
-  { id: 'a7', timestamp: '2026-08-11 14:22', action: 'Gắn cờ lệch Amount để duyệt', actor: 'system', target: 'FB-2026-081018823', detail: 'Bank $850 vs FB $800 — chênh lệch $50', category: 'reconciliation' },
-  { id: 'a8', timestamp: '2026-08-11 09:14', action: 'Tạo phiên đối soát', actor: 'system', target: 'Phiên 10/08/2026', detail: 'Thời gian xử lý: 11/08 – 12/08/2026', category: 'session' },
-  { id: 'a9', timestamp: '2026-08-11 09:14', action: 'Kích hoạt đối soát', actor: 'system', target: 'Phiên 10/08/2026', detail: '5.102 giao dịch — 4.901 khớp', category: 'reconciliation' },
-  { id: 'a10', timestamp: '2026-08-10 18:30', action: 'Đóng phiên đối soát', actor: 'system', target: 'Phiên 08/08/2026', detail: '83 mục chưa xử lý — đã tạo báo cáo', category: 'session' },
-  { id: 'a11', timestamp: '2026-08-10 15:44', action: 'Xác nhận lệch Amount', actor: 'admin@aez.vn', target: 'FB-2026-080917723', detail: 'Xác nhận: làm tròn tiền tệ — đã phê duyệt', category: 'admin_action' },
-  { id: 'a12', timestamp: '2026-08-10 09:20', action: 'Tạo phiên đối soát', actor: 'system', target: 'Phiên 09/08/2026', detail: 'Thời gian xử lý: 10/08 – 11/08/2026', category: 'session' },
-  { id: 'a13', timestamp: '2026-08-09 09:00', action: 'Upload Bill Facebook', actor: 'huyen@aez.vn', target: 'Phiên 08/08/2026', detail: 'File: fb_bills_0808.csv — 421 bill — 12 khớp mới', category: 'upload' },
-  { id: 'a14', timestamp: '2026-08-09 08:55', action: 'Thay đổi cài đặt', actor: 'admin@aez.vn', target: 'Ngưỡng nhắc nhở', detail: 'Đổi từ 36h → 24h', category: 'admin_action' },
-]
-
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 export const exceptionTypeLabel: Record<ExceptionType, string> = {
@@ -482,6 +463,40 @@ export const sessionsV2: SessionV2[] = [
     exceptionsAmount: 1640, exceptionsBills: 15,
     processingDeadline: '2026-08-08', hoursRemaining: 0,
     closedDate: '2026-08-08',
+  },
+  // sv5/sv6 — two Closed sessions on the SAME businessDate (2026-07-31), plus
+  // sv7 on a different date (2026-07-30). Reopen §11/22 fixture: proves the
+  // "Phiên cần mở lại" selector numbers "Phiên N" per businessDate (reset for
+  // each date), never by overall position in the eligible-sessions list.
+  {
+    id: 'sv5', date: '2026-07-31', status: 'closed',
+    sheetTotal: 30400, bankTotal: 29800, bankBills: 2980, fbTotal: 28650, fbBills: 2865,
+    reconciledAmount: 29800, reconciledBills: 2980,
+    unreconciledAmount: 0, unreconciledBills: 0,
+    fbUnreconciledAmount: 0, fbUnreconciledBills: 0,
+    exceptionsAmount: 0, exceptionsBills: 0,
+    processingDeadline: '2026-08-02', hoursRemaining: 0,
+    closedDate: '2026-08-02',
+  },
+  {
+    id: 'sv6', date: '2026-07-31', status: 'closed',
+    sheetTotal: 27600, bankTotal: 27100, bankBills: 2710, fbTotal: 26200, fbBills: 2620,
+    reconciledAmount: 27100, reconciledBills: 2710,
+    unreconciledAmount: 0, unreconciledBills: 0,
+    fbUnreconciledAmount: 0, fbUnreconciledBills: 0,
+    exceptionsAmount: 0, exceptionsBills: 0,
+    processingDeadline: '2026-08-02', hoursRemaining: 0,
+    closedDate: '2026-08-02',
+  },
+  {
+    id: 'sv7', date: '2026-07-30', status: 'closed',
+    sheetTotal: 33200, bankTotal: 32700, bankBills: 3270, fbTotal: 31400, fbBills: 3140,
+    reconciledAmount: 32700, reconciledBills: 3270,
+    unreconciledAmount: 0, unreconciledBills: 0,
+    fbUnreconciledAmount: 0, fbUnreconciledBills: 0,
+    exceptionsAmount: 0, exceptionsBills: 0,
+    processingDeadline: '2026-08-01', hoursRemaining: 0,
+    closedDate: '2026-08-01',
   },
 ]
 

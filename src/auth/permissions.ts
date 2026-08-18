@@ -130,6 +130,14 @@ export function canEditToleranceSettings(role: Role): boolean {
   return role === 'ADMIN' || role === 'ACCOUNTANT'
 }
 
+// "Thời gian lưu dữ liệu đối soát" (Settings Data Retention task §4): ADMIN
+// may view/edit/save; ACCOUNTANT may only view. Enforced again at the
+// domain layer (see reconciliationSettings.tsx's `setDataRetentionDays`) —
+// this UI-level helper is never the only gate.
+export function canEditDataRetention(role: Role): boolean {
+  return role === 'ADMIN'
+}
+
 // Mở lại phiên / Bổ sung Bill Bank / Đóng lại phiên (Reopen task §3): Admin +
 // Kế toán only, never Leader/CS. Enforced again at the domain layer itself
 // (see reopenStore.tsx's `authorizeReopenActor`) — this UI-level helper is

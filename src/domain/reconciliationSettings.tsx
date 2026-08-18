@@ -4,6 +4,12 @@
  * Supplement Session's Bank/Facebook import) — never by Module 4's History,
  * which is frozen at closure and must stay immutable regardless of later
  * setting changes (§17: "Closed History không recompute theo tolerance mới").
+ *
+ * Also owns "Thời gian lưu dữ liệu đối soát" (Settings Data Retention task)
+ * — a PROTOTYPE-ONLY setting + audit trail. No cron/job/backend reads this
+ * value to actually delete anything; see `dataRetentionContract.ts` for the
+ * pure eligibility rule a future backend cleanup worker would implement
+ * against.
  */
 import { createContext, useCallback, useContext, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
@@ -36,12 +42,46 @@ export interface ToleranceAuditEvent {
 
 export type SetToleranceResult = { ok: true } | { ok: false; error: string }
 
+// "Thời gian lưu dữ liệu đối soát" (Settings Data Retention task) — a
+// prototype-only SETTING + audit trail. Nothing in this file (or anywhere
+// else in the app) reads this value to actually scan/delete data — see
+// `dataRetentionContract.ts` for the pure eligibility rule a future backend
+// cleanup worker would implement against. This store only owns "what the
+// configured number of days currently is" and who's allowed to change it.
+//
+// §12: technical guardrail (must be a sane, storable positive integer of
+// days), not a business recommendation — this task doesn't invent a
+// business-mandated min/max beyond "positive integer".
+export const MIN_DATA_RETENTION_DAYS = 1
+export const MAX_DATA_RETENTION_DAYS = 3650 // ~10 years — technical ceiling only
+export const DEFAULT_DATA_RETENTION_DAYS = 60
+
+export interface DataRetentionAuditEvent {
+  id: string
+  type: 'DATA_RETENTION_UPDATED'
+  actorUserId: string
+  actorName: string
+  actorRole: Role
+  oldRetentionDays: number
+  newRetentionDays: number
+  timestamp: string
+}
+
+export type SetDataRetentionResult = { ok: true } | { ok: false; error: string }
+
 interface ReconciliationSettingsValue {
   tolerancePercent: number
   auditEvents: ToleranceAuditEvent[]
   // §14/43: enforced here, not just by hiding the UI input — any caller
   // (even a hypothetical CS/Leader-reachable one) gets rejected by role.
   setTolerancePercent: (value: number, actor: { id: string; name: string; role: Role }) => SetToleranceResult
+
+  dataRetentionDays: number
+  dataRetentionAuditEvents: DataRetentionAuditEvent[]
+  // ADMIN only — stricter than tolerance's ADMIN+ACCOUNTANT gate (task §4:
+  // Accountant may only VIEW this setting). Enforced here at the domain
+  // layer, never just by disabling the UI input.
+  setDataRetentionDays: (value: number, actor: { id: string; name: string; role: Role }) => SetDataRetentionResult
 }
 
 const ReconciliationSettingsContext = createContext<ReconciliationSettingsValue | null>(null)
@@ -102,9 +142,50 @@ export function ReconciliationSettingsProvider({ children }: { children: ReactNo
     [],
   )
 
+  const [dataRetentionDays, setDataRetentionState] = useState(DEFAULT_DATA_RETENTION_DAYS)
+  const [dataRetentionAuditEvents, setDataRetentionAuditEvents] = useState<DataRetentionAuditEvent[]>([])
+
+  const setDataRetentionDays = useCallback(
+    (value: number, actor: { id: string; name: string; role: Role }): SetDataRetentionResult => {
+      // §4: ADMIN only — Accountant may view but never call this action,
+      // regardless of what UI it's theoretically reachable from.
+      if (actor.role !== 'ADMIN') {
+        return { ok: false, error: 'Bạn không có quyền chỉnh Thời gian lưu dữ liệu đối soát.' }
+      }
+      // §5: only a positive integer — reject 0, negative, decimal, text, NaN.
+      if (typeof value !== 'number' || Number.isNaN(value) || !Number.isFinite(value) || !Number.isInteger(value)) {
+        return { ok: false, error: 'Vui lòng nhập một số nguyên dương.' }
+      }
+      if (value < MIN_DATA_RETENTION_DAYS) {
+        return { ok: false, error: `Thời gian lưu dữ liệu phải lớn hơn hoặc bằng ${MIN_DATA_RETENTION_DAYS} ngày.` }
+      }
+      if (value > MAX_DATA_RETENTION_DAYS) {
+        return { ok: false, error: `Thời gian lưu dữ liệu không được lớn hơn ${MAX_DATA_RETENTION_DAYS} ngày (giới hạn kỹ thuật).` }
+      }
+
+      setDataRetentionState(prev => {
+        setDataRetentionAuditEvents(events => [
+          {
+            id: `RETENTION-AUDIT-${events.length + 1}`,
+            type: 'DATA_RETENTION_UPDATED',
+            actorUserId: actor.id, actorName: actor.name, actorRole: actor.role,
+            oldRetentionDays: prev, newRetentionDays: value, timestamp: nowStamp(),
+          },
+          ...events,
+        ])
+        return value
+      })
+      return { ok: true }
+    },
+    [],
+  )
+
   const value = useMemo<ReconciliationSettingsValue>(
-    () => ({ tolerancePercent, auditEvents, setTolerancePercent }),
-    [tolerancePercent, auditEvents, setTolerancePercent],
+    () => ({
+      tolerancePercent, auditEvents, setTolerancePercent,
+      dataRetentionDays, dataRetentionAuditEvents, setDataRetentionDays,
+    }),
+    [tolerancePercent, auditEvents, setTolerancePercent, dataRetentionDays, dataRetentionAuditEvents, setDataRetentionDays],
   )
 
   return <ReconciliationSettingsContext.Provider value={value}>{children}</ReconciliationSettingsContext.Provider>
