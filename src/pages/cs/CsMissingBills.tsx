@@ -3,30 +3,34 @@ import { useAuth } from '../../auth/AuthContext'
 import { teamScopeCsUsers } from '../../auth/permissions'
 import { useAccountStore } from '../../domain/accountStore'
 import { useCsScope, resolveScopeTarget } from '../../domain/csScope'
-import { listActiveSessions, listOpenSessionsForCs } from '../../domain/bankBills'
-import { getCsSessionRows } from '../../domain/csWorkload'
-import type { CsDisplayStatus } from '../../domain/csWorkload'
-import { useCombinedLiveLookup } from '../../domain/liveWorkloadLookup'
+import { listActiveSessions } from '../../domain/bankBills'
 import { useReopenStore } from '../../domain/reopenStore'
 import { fmtDate } from '../../data/sharedData'
 import PersonalMissingBills from './missingbills/PersonalMissingBills'
 import TeamMissingBillsSummary from './missingbills/TeamMissingBillsSummary'
-import { STATUS_META } from './shared'
 
 interface Props {
   onNavigateUpload: () => void
 }
 
 // Module 2 — Bill thiếu CS/Leader. Reuses Module 1's CsScopeContext (§5) so
-// scope AND the Dashboard's drill-down target survive navigating here, and
-// reuses the same session-lifecycle rules (§6/7/17) rather than re-deriving
-// them: this module ONLY ever browses currently-open (active/closing_soon)
-// sessions — closed/historical sessions belong to Module Lịch sử (not built
-// yet), for every scope (CS, Leader personal, Leader member, Leader team).
+// scope survives navigating here, and reuses the same session-lifecycle
+// rules rather than re-deriving them: this module ONLY ever browses
+// currently-open (active/closing_soon/reopened) sessions — closed/historical
+// sessions belong to Module Lịch sử, for every scope (CS, Leader personal,
+// Leader member, Leader team).
+//
+// Chọn Bill khi giải trình task §1/§9/§11: for scope self/member,
+// PersonalMissingBills now shows ALL of that CS's ACTIVE+REOPENED sessions
+// merged into ONE table by itself — so there is no more "which session" pick
+// to make here, and no dropdown for it. Team scope is UNCHANGED — it's a
+// per-CS roll-up that "aggregates STRICTLY within ONE selected session"
+// (see TeamMissingBillsSummary's own header comment), so its own "Phiên đối
+// soát" selector stays exactly as it was.
 export default function CsMissingBills({ onNavigateUpload }: Props) {
   const { currentUser } = useAuth()
   const {
-    scope, setScope, missingBillFocus, requestUploadFocus,
+    scope, setScope,
     drillDownOrigin, beginTeamDrillDown, clearDrillDownOrigin,
   } = useCsScope()
   const [manualSessionId, setManualSessionId] = useState<string | null>(null)
@@ -45,42 +49,18 @@ export default function CsMissingBills({ onNavigateUpload }: Props) {
   const liveTeamName = liveOwnTeamId ? (teams.find(t => t.teamId === liveOwnTeamId)?.teamName ?? '') : ''
 
   const target = currentUser && scope.kind !== 'team' ? resolveScopeTarget(currentUser, scope, accounts) : null
-  const targetCsId = target?.csId ?? ''
 
-  // §11/17: Team scope has no single CS, so its session list is every
-  // currently-open session system-wide; Personal/member scope stays scoped
-  // to sessions that CS actually has a case in — same rule as before, just
-  // now ALSO available (not hidden) when scope = Toàn Team.
-  // Reopen task §24/29: Reopened sessions are folded in as an EQUALLY valid
-  // operational session — never a second selector, never a separate page.
+  // Team scope only — every currently-open session system-wide, its own
+  // "Phiên đối soát" selector (unrelated to the CS/member merged table).
   const reopenStore = useReopenStore()
   const sessionOptions = useMemo(() => {
-    const base = scope.kind === 'team' ? listActiveSessions() : targetCsId ? listOpenSessionsForCs(targetCsId) : []
-    const reopened = scope.kind === 'team' ? reopenStore.getAllReopenedSessions() : targetCsId ? reopenStore.getReopenSessionsForCs(targetCsId) : []
+    if (scope.kind !== 'team') return []
+    const base = listActiveSessions()
+    const reopened = reopenStore.getAllReopenedSessions()
     const seen = new Set(base.map(s => s.sessionId))
     return [...base, ...reopened.filter(s => !seen.has(s.sessionId))]
-  }, [scope.kind, targetCsId, reopenStore])
+  }, [scope.kind, reopenStore])
 
-  // §51/58: the selector must show the REAL display status next to each
-  // session (never just the date) — this is what makes "Còn tồn đọng"
-  // sessions visibly distinct from "Đang xử lý"/"Sắp hết hạn" ones, on top
-  // of them already being structurally included (OPEN_STATUSES was never
-  // deadline-based to begin with — see sessionLifecycle.ts). Only
-  // meaningful for a single CS (self/member); Team scope has no one CS to
-  // compute a status for.
-  const live = useCombinedLiveLookup(targetCsId)
-  const sessionStatusById = useMemo(() => {
-    if (scope.kind === 'team' || !target) return new Map<string, CsDisplayStatus>()
-    const rows = getCsSessionRows(target.csId, target.displayName, live)
-    return new Map(rows.map(r => [r.sessionId, r.status]))
-  }, [scope.kind, target, live])
-
-  // Only clear the current session pick when it's genuinely NOT selectable
-  // in the new option set — never a blanket reset on every scope change.
-  // This is what lets a drill-down (Team session A -> Xem Mạnh) land on the
-  // SAME session A, and what lets "← Quay lại Toàn Team" come back to
-  // exactly the session it left, since Team's session list is a superset of
-  // any single CS's — the currently-picked session simply stays valid.
   useEffect(() => {
     if (manualSessionId && !sessionOptions.some(s => s.sessionId === manualSessionId)) {
       setManualSessionId(null)
@@ -89,6 +69,7 @@ export default function CsMissingBills({ onNavigateUpload }: Props) {
 
   if (!currentUser) return null
 
+  const sessionId = manualSessionId ?? sessionOptions[0]?.sessionId ?? null
   const selectValue = scope.kind === 'self' ? 'self' : scope.kind === 'team' ? 'team' : `member:${scope.csId}`
 
   // A direct dropdown switch is never a "drill-down from Team" — always
@@ -98,23 +79,6 @@ export default function CsMissingBills({ onNavigateUpload }: Props) {
     if (value === 'self') setScope({ kind: 'self' })
     else if (value === 'team') setScope({ kind: 'team' })
     else setScope({ kind: 'member', csId: value.slice('member:'.length) })
-  }
-
-  // §1: a Dashboard drill-down focus is only honored if that session is
-  // STILL active — never silently resurrect a now-closed/historical session
-  // into this module's selector just because Module 1 pointed at it earlier.
-  const focusMatchesTarget = missingBillFocus && target && missingBillFocus.csId === target.csId
-  const focusSessionId = focusMatchesTarget ? missingBillFocus!.sessionId : null
-  const focusStillActive = focusSessionId != null && sessionOptions.some(s => s.sessionId === focusSessionId)
-  const focusExpired = focusMatchesTarget && focusSessionId != null && !focusStillActive
-
-  const sessionId = manualSessionId ?? (focusStillActive ? focusSessionId : null) ?? sessionOptions[0]?.sessionId ?? null
-
-  // §24: Upload Bill Facebook always belongs to currentUser, never to
-  // whatever scope/session-owner is being VIEWED here.
-  function handleNavigateUpload() {
-    if (sessionId) requestUploadFocus(sessionId)
-    onNavigateUpload()
   }
 
   // Team table's "Xem" — the ONE place that records a drill-down origin, so
@@ -152,13 +116,12 @@ export default function CsMissingBills({ onNavigateUpload }: Props) {
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 18, gap: 16, flexWrap: 'wrap' }}>
         <div>
           <div style={{ fontSize: 18, fontWeight: 700, color: '#182230', marginBottom: 4 }}>Bill thiếu</div>
-          <div style={{ fontSize: 13, color: '#667085' }}>Bank Bill chưa đối soát, TKQC cần kiểm tra và giải trình của phiên đang active.</div>
+          <div style={{ fontSize: 13, color: '#667085' }}>Bank Bill chưa đối soát, TKQC cần kiểm tra và giải trình của mọi phiên đang xử lý (active + đã mở lại).</div>
         </div>
-        {/* §11/23: cả 2 selector luôn hiện song song, kể cả khi scope = Toàn Team;
-            §4: nút Back không thay thế 2 selector này — vẫn dùng được để chuyển
-            trực tiếp sang CS khác hoặc đổi phiên. */}
         <div style={{ display: 'flex', alignItems: 'flex-end', gap: 14, flexWrap: 'wrap' }}>
-          {sessionOptions.length > 0 && (
+          {/* Team scope's own session selector — unrelated to/unaffected by
+              the merged Bill thiếu table used for self/member scope. */}
+          {scope.kind === 'team' && sessionOptions.length > 0 && (
             <div>
               <label style={{ display: 'block', fontSize: 11.5, fontWeight: 600, color: '#667085', marginBottom: 4 }}>
                 Phiên đối soát
@@ -166,11 +129,9 @@ export default function CsMissingBills({ onNavigateUpload }: Props) {
               <select className="select-input" value={sessionId ?? ''} onChange={e => setManualSessionId(e.target.value)}>
                 {sessionOptions.map(s => {
                   const isReopened = reopenStore.isSessionReopened(s.sessionId)
-                  const status = sessionStatusById.get(s.sessionId)
-                  const statusLabel = isReopened ? 'Đã mở lại' : status ? STATUS_META[status].label : 'Đã xử lý hết'
                   return (
                     <option key={s.sessionId} value={s.sessionId}>
-                      {fmtDate(s.sessionDate)}{scope.kind !== 'team' ? ` — ${statusLabel}` : isReopened ? ' — Đã mở lại' : ''}
+                      {fmtDate(s.sessionDate)}{isReopened ? ' — Đã mở lại' : ''}
                     </option>
                   )
                 })}
@@ -194,12 +155,6 @@ export default function CsMissingBills({ onNavigateUpload }: Props) {
         </div>
       </div>
 
-      {focusExpired && (
-        <div style={{ background: '#FFFAEB', border: '1px solid #FEDF89', color: '#B54708', borderRadius: 8, padding: '8px 14px', fontSize: 12.5, marginBottom: 16 }}>
-          Phiên được mở từ Bảng điều hành không còn active — đang hiển thị phiên active gần nhất thay thế. Xem phiên đã đóng ở Lịch sử.
-        </div>
-      )}
-
       {scope.kind === 'team' ? (
         sessionId ? (
           <TeamMissingBillsSummary
@@ -212,23 +167,18 @@ export default function CsMissingBills({ onNavigateUpload }: Props) {
             <div style={{ fontSize: 13.5, fontWeight: 600, color: '#182230' }}>Không có phiên active nào.</div>
           </div>
         )
-      ) : target && sessionId ? (
+      ) : target ? (
         <PersonalMissingBills
           csId={target.csId}
           csName={target.displayName}
           teamName={liveTeamName}
-          sessionId={sessionId}
-          sessionDate={sessionOptions.find(s => s.sessionId === sessionId)?.sessionDate ?? ''}
           readOnly={target.readOnly}
-          onNavigateUpload={handleNavigateUpload}
+          onNavigateUpload={onNavigateUpload}
         />
       ) : (
         <div className="card" style={{ padding: '20px 18px' }}>
           <div style={{ fontSize: 13.5, fontWeight: 600, color: '#182230', marginBottom: 4 }}>
             Không có phiên nào cần xử lý.
-          </div>
-          <div style={{ fontSize: 12.5, color: '#667085' }}>
-            {target?.displayName ?? 'CS này'} hiện không có Bank Bill chưa đối soát trong các phiên đang hoạt động.
           </div>
         </div>
       )}

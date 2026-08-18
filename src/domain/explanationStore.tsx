@@ -81,6 +81,11 @@ export interface SubmitExplanationInput {
   reasons: ExplanationReason[]
   note: string
   evidence: EvidenceImage[]
+  // Chọn Bill khi giải trình task: the CS's explicit selection (Bank txn
+  // ids) for THIS session — never "every unresolved bill of the session".
+  // The store still independently intersects this against the CURRENT
+  // unresolved set below (defense-in-depth, never trusts the caller alone).
+  billIds: string[]
 }
 
 export interface ReviewExplanationInput {
@@ -186,8 +191,17 @@ export function ExplanationStoreProvider({ children }: { children: ReactNode }) 
         r => !acceptedIds.has(r.txnId) && !reopenResolvedIds.has(r.txnId),
       )
       const unresolved = [...getUnresolvedBankRecords(mbc, acceptedIds), ...reopenUnresolved]
-      if (unresolved.length === 0) {
-        return { ok: false, error: 'Không còn Bank Bill nào chưa đối soát để giải trình.' }
+      // Chọn Bill khi giải trình task §7/8: the scope of THIS attempt is
+      // ONLY `input.billIds` — never "every unresolved bill of the
+      // session". Intersected against the freshly-recomputed `unresolved`
+      // set above so a bill that stopped being eligible (already matched,
+      // or picked up by a since-accepted explanation) between the CS's
+      // selection and this call can never sneak into the snapshot, even if
+      // the caller's own pre-submit revalidation were somehow skipped.
+      const selectedIds = new Set(input.billIds)
+      const selected = unresolved.filter(r => selectedIds.has(r.txnId))
+      if (selected.length === 0) {
+        return { ok: false, error: 'Các Bill đã chọn không còn đủ điều kiện giải trình.' }
       }
 
       const attempt: ExplanationAttempt = {
@@ -196,9 +210,9 @@ export function ExplanationStoreProvider({ children }: { children: ReactNode }) 
         reasons: input.reasons,
         note: input.note,
         evidence: input.evidence,
-        billIdsSnapshot: unresolved.map(r => r.txnId),
-        billCountSnapshot: unresolved.length,
-        amountSnapshot: round2(unresolved.reduce((s, r) => s + r.amount, 0)),
+        billIdsSnapshot: selected.map(r => r.txnId),
+        billCountSnapshot: selected.length,
+        amountSnapshot: round2(selected.reduce((s, r) => s + r.amount, 0)),
         decision: 'pending',
       }
 
